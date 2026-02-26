@@ -27,7 +27,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from PySide6.QtCore import QTimer
 
-from qt_web_extractor.extractor import QtWebExtractor, _ExtractionResult
+from qt_web_extractor.extractor import QtWebExtractor, _ExtractionResult, _detect_pdf
 
 log = logging.getLogger("qt-web-extractor")
 
@@ -46,6 +46,7 @@ class _Handler(BaseHTTPRequestHandler):
     extract_queue: "queue.Queue[_ExtractRequest | None]"
     timeout_s: int = 40
     api_key: str = ""
+    user_agent: str | None = None
 
     def log_message(self, fmt, *args):
         log.info(fmt, *args)
@@ -87,8 +88,8 @@ class _Handler(BaseHTTPRequestHandler):
             return None
 
     @staticmethod
-    def _is_pdf(url: str) -> bool:
-        return url.lower().split("?")[0].split("#")[0].endswith(".pdf")
+    def _is_pdf(url: str, user_agent: str | None = None) -> bool:
+        return _detect_pdf(url, user_agent=user_agent)
 
     def _extract_one(self, url: str, pdf: bool = False) -> _ExtractionResult | None:
         req = _ExtractRequest(url, pdf=pdf)
@@ -118,7 +119,7 @@ class _Handler(BaseHTTPRequestHandler):
                 url = url.strip()
                 if not url:
                     continue
-                pdf = self._is_pdf(url)
+                pdf = self._is_pdf(url, self.user_agent)
                 log.info("  -> %s (pdf=%s)", url, pdf)
                 result = self._extract_one(url, pdf=pdf)
                 if result is None:
@@ -147,7 +148,7 @@ class _Handler(BaseHTTPRequestHandler):
 
             pdf = body.get("pdf", None)
             if pdf is None:
-                pdf = self._is_pdf(url)
+                pdf = self._is_pdf(url, self.user_agent)
 
             log.info("Extract request: %s (pdf=%s)", url, pdf)
             result = self._extract_one(url, pdf=pdf)
@@ -183,6 +184,7 @@ def serve(
     _Handler.extract_queue = extract_queue
     _Handler.timeout_s = timeout_ms // 1000 + 10
     _Handler.api_key = api_key
+    _Handler.user_agent = user_agent
 
     server = HTTPServer((host, port), _Handler)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -204,7 +206,7 @@ def serve(
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
 
-    # Qt WebEngine must run on the main thread, so we poll the queue from inside the Qt event loop.
+    # Qt WebEngine must run on the main thread; poll queue from Qt event loop.
     poll_timer = QTimer()
     poll_timer.setInterval(50)
 

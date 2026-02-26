@@ -33,8 +33,11 @@ class Tools:
     def __init__(self):
         self.valves = self.Valves()
 
-    def _post(self, url: str, pdf: bool = False) -> dict:
-        data = json.dumps({"url": url, "pdf": pdf}).encode("utf-8")
+    def _post(self, url: str, pdf: bool | None = None) -> dict:
+        payload: dict = {"url": url}
+        if pdf is not None:
+            payload["pdf"] = pdf
+        data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             f"{self.valves.server_url.rstrip('/')}/extract",
             data=data,
@@ -64,11 +67,9 @@ class Tools:
         :param url: The URL of the web page to fetch and render.
         :return: The extracted plain text content of the rendered page.
         """
-        is_pdf = url.lower().split("?")[0].split("#")[0].endswith(".pdf")
-        label = "PDF" if is_pdf else "page"
-        await self._emit(__event_emitter__, f"Loading {label}: {url}", False)
+        await self._emit(__event_emitter__, f"Loading: {url}", False)
         try:
-            result = self._post(url, pdf=is_pdf)
+            result = self._post(url)  # let server auto-detect PDF
             error = result.get("error", "")
             title = result.get("title", "")
             text = result.get("text", "")

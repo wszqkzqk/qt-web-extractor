@@ -22,10 +22,10 @@ import os
 import sys
 import json
 import atexit
-import tempfile
+import urllib.parse
 import urllib.request
 import shiboken6
-from PySide6.QtCore import QUrl, QTimer, QEventLoop, Signal
+from PySide6.QtCore import QUrl, QTimer, QEventLoop, Signal, QByteArray, QBuffer, QIODevice
 from PySide6.QtWidgets import QApplication
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtWebEngineCore import (
@@ -41,6 +41,36 @@ os.environ.setdefault(
     "QTWEBENGINE_CHROMIUM_FLAGS",
     "--disable-gpu --disable-software-rasterizer",
 )
+
+
+def _detect_pdf(
+    url: str,
+    user_agent: str | None = None,
+    timeout: int = 10,
+) -> bool:
+    """Check if *url* points to a PDF.
+
+    .pdf suffix is a fast path; otherwise for http(s) URLs a HEAD
+    request is sent to check Content-Type.
+    """
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path.rstrip("/").lower()
+
+    if path.endswith(".pdf"):
+        return True
+
+    if parsed.scheme not in ("http", "https"):
+        return False
+
+    try:
+        req = urllib.request.Request(url, method="HEAD")
+        if user_agent:
+            req.add_header("User-Agent", user_agent)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            ct = resp.headers.get("Content-Type", "")
+            return "application/pdf" in ct.lower()
+    except Exception:
+        return False
 
 class _ExtractionResult:
     __slots__ = ("url", "title", "text", "html", "error")
@@ -84,7 +114,7 @@ class _WebPage(QWebEnginePage):
 
         self.loadFinished.connect(self._on_load_finished)
 
-        # Wait for JS to settle after load
+        # post-load JS settle delay
         self._stability_timer = QTimer()
         self._stability_timer.setSingleShot(True)
         self._stability_timer.setInterval(2000)
@@ -105,8 +135,7 @@ class _WebPage(QWebEnginePage):
             return
         if ok:
             self._load_ok = True
-        # Don't bail on ok=False; the page may be going through a
-        # JS challenge that triggers further navigation.
+        # ok=False may just be a JS challenge redirect; wait and retry.
         self._stability_timer.start()
 
     def _on_timeout(self):
@@ -249,26 +278,30 @@ class QtWebExtractor:
     def extract_pdf(self, url_or_path: str) -> _ExtractionResult:
         """Extract text from a PDF file or URL using Qt PDF."""
         result = _ExtractionResult(url=url_or_path)
-        tmp_path: str | None = None
+
+        # prevent GC while doc is in use
+        _buffer: QBuffer | None = None
+        _byte_array: QByteArray | None = None
 
         try:
-            local_path = url_or_path
-            if url_or_path.startswith(("http://", "https://")):
+            doc = QPdfDocument()
+            parsed = urllib.parse.urlparse(url_or_path)
+
+            if parsed.scheme in ("http", "https", "ftp"):
                 req = urllib.request.Request(url_or_path)
                 if self._user_agent:
                     req.add_header("User-Agent", self._user_agent)
                 with urllib.request.urlopen(
                     req, timeout=self._timeout_ms // 1000
                 ) as resp:
-                    with tempfile.NamedTemporaryFile(
-                        suffix=".pdf", delete=False
-                    ) as f:
-                        f.write(resp.read())
-                        tmp_path = f.name
-                local_path = tmp_path
-
-            doc = QPdfDocument()
-            doc.load(local_path)
+                    data = resp.read()
+                    _byte_array = QByteArray(data)
+                    _buffer = QBuffer(_byte_array)
+                    _buffer.open(QIODevice.OpenModeFlag.ReadOnly)
+                    doc.load(_buffer)
+            else:
+                local_path = parsed.path if parsed.scheme == "file" else url_or_path
+                doc.load(local_path)
 
             if doc.status() != QPdfDocument.Status.Ready:
                 result.error = f"Failed to load PDF: {doc.status().name}"
@@ -283,12 +316,6 @@ class QtWebExtractor:
             result.title = os.path.basename(url_or_path)
         except Exception as e:
             result.error = str(e)
-        finally:
-            if tmp_path is not None:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
 
         return result
 
