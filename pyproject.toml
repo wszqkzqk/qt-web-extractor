@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qt-web-extractor"
+version = "0.1.0"
+description = "Qt WebEngine based web content extractor for Open WebUI"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.10"
+authors = [
+    { name = "wszqkzqk" },
+]
+dependencies = [
+    "PySide6-Essentials>=6.5",
+]
+
+[project.scripts]
+qt-web-extractor = "qt_web_extractor.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["qt_web_extractor*"]

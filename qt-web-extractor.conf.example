@@ -1,0 +1,16 @@
+# Configuration for qt-web-extractor
+# Located at /etc/qt-web-extractor.conf
+# Enable and start with: systemctl enable --now qt-web-extractor
+
+# Listen address and port
+HOST=127.0.0.1
+PORT=8766
+
+# Page load timeout in milliseconds
+TIMEOUT_MS=30000
+
+# Custom User-Agent (empty = default Chromium UA)
+#USER_AGENT=
+
+# API key for Bearer token auth (empty = no auth)
+#API_KEY=

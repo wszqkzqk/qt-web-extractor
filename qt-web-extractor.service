@@ -1,0 +1,14 @@
+[Unit]
+Description=Qt WebEngine Web Content Extractor
+After=network.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+EnvironmentFile=-/etc/qt-web-extractor.conf
+ExecStart=/usr/bin/qt-web-extractor serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
