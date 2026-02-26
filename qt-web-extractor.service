@@ -5,6 +5,9 @@ After=network.target
 [Service]
 Type=simple
 DynamicUser=yes
+StateDirectory=io.github.wszqkzqk/qt-web-extractor
+CacheDirectory=io.github.wszqkzqk/qt-web-extractor
+Environment=HOME=%S/io.github.wszqkzqk/qt-web-extractor
 EnvironmentFile=-/etc/qt-web-extractor.conf
 ExecStart=/usr/bin/qt-web-extractor serve
 Restart=on-failure

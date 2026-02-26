@@ -37,6 +37,10 @@ from PySide6.QtWebEngineCore import (
 if "QT_QPA_PLATFORM" not in os.environ:
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
+os.environ.setdefault(
+    "QTWEBENGINE_CHROMIUM_FLAGS",
+    "--disable-gpu --disable-software-rasterizer",
+)
 
 class _ExtractionResult:
     __slots__ = ("url", "title", "text", "html", "error")
