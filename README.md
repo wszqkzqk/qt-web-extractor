@@ -38,7 +38,23 @@ Qt Web Extractor spins up a headless Chromium (via Qt WebEngine) to render
 pages properly, then hands back the text and HTML. Runs in offscreen mode by
 default, no display needed.
 
+### Why not Playwright / Puppeteer / Selenium?
+
+While tools like Playwright are incredibly powerful for browser automation, they can be overkill for simple content extraction:
+
+- **Simpler Deployment:** No need to download and manage separate, standalone Chromium binaries (which Playwright/Puppeteer do by default).
+- **Package Manager Integration:** It uses the system's native Qt WebEngine. On Linux distributions, this means it integrates perfectly with your system's package manager, receiving security updates automatically without bloating your application directory.
+- **Lightweight:** It focuses purely on rendering and extracting content, making it more lightweight and straightforward to set up as a simple background service.
+
 ## Install
+
+### Arch Linux (AUR)
+
+You can install the package directly from the Arch User Repository (AUR) using your favorite AUR helper (e.g., `yay` or `paru`):
+
+```bash
+yay -S qt-web-extractor
+```
 
 ### System deps
 
