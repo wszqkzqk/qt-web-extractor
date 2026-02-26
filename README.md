@@ -89,8 +89,8 @@ print(result.text)
 
 ### Open WebUI integration
 
-The tool talks to the extraction server over HTTP, so you need the server
-running first.
+Qt Web Extractor integrates with Open WebUI as an **external web page loader**.
+The server exposes an API compatible with Open WebUI's built-in web loader engine.
 
 1. Install and start the server:
    ```
@@ -102,15 +102,26 @@ running first.
    qt-web-extractor serve
    ```
 
-2. In the Open WebUI admin panel, go to **Workspace → Tools → Create Tool**
+2. In the Open WebUI admin panel, go to
+   **Settings → Web Search → Web Page Loader**
 
-3. Paste the contents of `qt_web_extractor/tool.py` into the editor and save
+3. Set **Web Loader Engine** to `external`
 
-4. Configure the Valve `server_url` to point to your server (default
-   `http://127.0.0.1:8766`). Set `api_key` if you configured one.
+4. Set **External Web Loader URL** to `http://127.0.0.1:8766`
+   (or wherever the server is running)
 
-5. `fetch_page`, `fetch_page_html`, and `fetch_pdf` are now available in conversations.
-   `fetch_page` auto-detects PDF URLs by file extension.
+5. Set **External Web Loader API Key** to the server's `API_KEY` if
+   you configured one, or any non-empty string if didn't.
+
+That's it — Open WebUI will now use Qt Web Extractor to load all web pages
+with full JavaScript rendering support. PDF URLs are auto-detected and handled
+via Qt PDF.
+
+#### Alternative: custom tool
+
+You can also use `qt_web_extractor/tool.py` as a custom Open WebUI tool for
+more explicit control (see the file for setup instructions). This provides
+`fetch_page`, `fetch_page_html`, and `fetch_pdf` as conversation tools.
 
 ### Server mode
 
@@ -127,12 +138,15 @@ qt-web-extractor serve --host 0.0.0.0 --port 9000
 qt-web-extractor serve --api-key mysecretkey
 ```
 
-API:
-- `POST /extract` with `{"url": "https://..."}` → returns JSON with
-  `url`, `title`, `text`, `html`, `error`
-- `POST /extract` with `{"url": "https://.../file.pdf"}` → auto-detects PDF,
-  extracts text (or pass `"pdf": true` to force PDF mode)
+API endpoints:
+- `POST /` with `{"urls": ["https://...", ...]}` → Open WebUI external loader
+  format, returns `[{"page_content": "...", "metadata": {"source": "...", "title": "..."}}]`
+- `POST /extract` with `{"url": "https://..."}` → single-URL format, returns
+  JSON with `url`, `title`, `text`, `html`, `error`
 - `GET /health` → `{"status": "ok"}`
+
+PDF URLs (ending in `.pdf`) are auto-detected in both endpoints. For
+`POST /extract`, pass `"pdf": true` to force PDF mode.
 
 ### systemd
 
@@ -146,12 +160,13 @@ sudo nano /etc/qt-web-extractor.conf
 sudo systemctl enable --now qt-web-extractor
 ```
 
-#### Valve settings (Open WebUI tool)
+#### Open WebUI settings
 
-| Name | Default | Description |
-|------|---------|-------------|
-| `server_url` | `http://127.0.0.1:8766` | Extraction server URL |
-| `api_key` | `""` | Bearer token (must match server's `API_KEY`) |
+| Setting | Value | Description |
+|---------|-------|-------------|
+| `WEB_LOADER_ENGINE` | `external` | Use external web loader |
+| `EXTERNAL_WEB_LOADER_URL` | `http://127.0.0.1:8766` | Server URL |
+| `EXTERNAL_WEB_LOADER_API_KEY` | `""` | Bearer token (must match server's `API_KEY`) |
 
 #### Server config (`/etc/qt-web-extractor.conf`)
 

@@ -75,45 +75,91 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send_json({"error": "not found"}, 404)
 
-    def do_POST(self):
-        if not self._check_auth():
-            return
-        if self.path != "/extract":
-            self._send_json({"error": "not found"}, 404)
-            return
-
+    def _read_json_body(self) -> dict | None:
         length = int(self.headers.get("Content-Length", 0))
         if length == 0:
             self._send_json({"error": "empty body"}, 400)
-            return
+            return None
         try:
-            body = json.loads(self.rfile.read(length))
+            return json.loads(self.rfile.read(length))
         except json.JSONDecodeError:
             self._send_json({"error": "invalid JSON"}, 400)
-            return
+            return None
 
-        url = body.get("url", "").strip()
-        if not url:
-            self._send_json({"error": "url is required"}, 400)
-            return
+    @staticmethod
+    def _is_pdf(url: str) -> bool:
+        return url.lower().split("?")[0].split("#")[0].endswith(".pdf")
 
-        pdf = body.get("pdf", None)
-        if pdf is None:
-            pdf = url.lower().split("?")[0].split("#")[0].endswith(".pdf")
-
-        log.info("Extract request: %s (pdf=%s)", url, pdf)
+    def _extract_one(self, url: str, pdf: bool = False) -> _ExtractionResult | None:
         req = _ExtractRequest(url, pdf=pdf)
         self.extract_queue.put(req)
-
         if not req.done.wait(timeout=self.timeout_s):
-            self._send_json({"error": "extraction timed out"}, 504)
+            return None
+        return req.result
+
+    def do_POST(self):
+        if not self._check_auth():
             return
 
-        if req.result is None:
-            self._send_json({"error": "extraction failed"}, 500)
+        body = self._read_json_body()
+        if body is None:
             return
 
-        self._send_json(req.result.to_dict())
+        # Open WebUI external web loader format: POST / with {"urls": [...]}
+        if self.path in ("/", "") and "urls" in body:
+            urls = body.get("urls", [])
+            if not isinstance(urls, list) or not urls:
+                self._send_json({"error": "urls must be a non-empty array"}, 400)
+                return
+
+            log.info("Batch extract request: %d URLs", len(urls))
+            documents = []
+            for url in urls:
+                url = url.strip()
+                if not url:
+                    continue
+                pdf = self._is_pdf(url)
+                log.info("  -> %s (pdf=%s)", url, pdf)
+                result = self._extract_one(url, pdf=pdf)
+                if result is None:
+                    documents.append({
+                        "page_content": "",
+                        "metadata": {"source": url, "error": "extraction timed out"},
+                    })
+                else:
+                    documents.append({
+                        "page_content": result.text,
+                        "metadata": {
+                            "source": result.url or url,
+                            "title": result.title,
+                            **({"error": result.error} if result.error else {}),
+                        },
+                    })
+            self._send_json(documents)
+            return
+
+        # Legacy single-URL format: POST /extract with {"url": "..."}
+        if self.path == "/extract":
+            url = body.get("url", "").strip()
+            if not url:
+                self._send_json({"error": "url is required"}, 400)
+                return
+
+            pdf = body.get("pdf", None)
+            if pdf is None:
+                pdf = self._is_pdf(url)
+
+            log.info("Extract request: %s (pdf=%s)", url, pdf)
+            result = self._extract_one(url, pdf=pdf)
+
+            if result is None:
+                self._send_json({"error": "extraction timed out"}, 504)
+                return
+
+            self._send_json(result.to_dict())
+            return
+
+        self._send_json({"error": "not found"}, 404)
 
 
 def serve(
