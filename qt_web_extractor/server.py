@@ -204,8 +204,7 @@ def serve(
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
 
-    # Qt WebEngine must run on the main thread, so we poll the queue
-    # from inside the Qt event loop.
+    # Qt WebEngine must run on the main thread, so we poll the queue from inside the Qt event loop.
     poll_timer = QTimer()
     poll_timer.setInterval(50)
 

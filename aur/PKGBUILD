@@ -8,9 +8,9 @@ arch=('any')
 url='https://github.com/wszqkzqk/qt-web-extractor'
 license=('GPL-3.0-or-later')
 depends=('python' 'pyside6' 'qt6-webengine')
-makedepends=('python-build' 'python-installer' 'python-setuptools' 'python-wheel')
+makedepends=('git' 'python-build' 'python-installer' 'python-setuptools' 'python-wheel')
 backup=('etc/qt-web-extractor.conf')
-source=("${pkgname}::git+file://${startdir}")
+source=("${pkgname}::git+${url}.git")
 sha256sums=('SKIP')
 
 pkgver() {

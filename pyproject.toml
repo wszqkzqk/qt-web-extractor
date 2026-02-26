@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "qt-web-extractor"
 version = "0.1.0"
-description = "Qt WebEngine based web content extractor for Open WebUI"
+description = "Qt WebEngine based web content extractor with HTTP server interface"
 readme = "README.md"
 license = "GPL-3.0-or-later"
 requires-python = ">=3.10"

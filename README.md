@@ -1,21 +1,42 @@
 # Qt Web Extractor
 
-Web content extraction engine backed by Qt WebEngine (Chromium). Built for
-[Open WebUI](https://github.com/open-webui/open-webui) to replace the default
-HTTP fetcher, which can't handle pages that need JavaScript, cookies, or
-dynamic content loading.
+A general-purpose web content extraction engine powered by Qt WebEngine
+(Chromium). Designed to extract fully-rendered text and HTML from modern web
+pages that rely on JavaScript, cookies, dynamic content loading, or
+client-side rendering — scenarios where plain HTTP fetchers fall short.
 
 Also supports extracting text from PDF documents via Qt PDF.
 
+**Key features:**
+
+- **Full JavaScript rendering** — handles SPAs, React/Vue/Angular apps, and
+  any page that requires JS to display content.
+- **Cookie & session support** — access pages behind login walls or consent
+  gates.
+- **PDF text extraction** — extract text from PDF documents via Qt PDF with
+  auto-detection.
+- **Multiple interfaces** — use as a CLI tool, Python library, or HTTP
+  service with a simple REST API.
+- **Headless operation** — runs in Qt offscreen mode, no display or GPU
+  required.
+- **systemd integration** — ships with a service unit for easy deployment.
+- **Open WebUI compatible** — works as an external web page loader for
+  [Open WebUI](https://github.com/open-webui/open-webui), and can also be
+  used as a custom tool plugin.
+- **Universal HTTP API** — the REST server can serve any application that
+  needs rendered web content: AI agents, crawlers, monitoring tools,
+  automation scripts, and more.
+
 ## Why?
 
-Open WebUI's built-in web loader does plain HTTP requests — no JS execution,
-no cookie handling, no waiting for async content. That means SPAs, React/Vue
-apps, and anything behind a login wall comes back empty or broken.
+Traditional HTTP fetchers (like `requests` or `urllib`) do plain HTTP
+requests — no JS execution, no cookie handling, no waiting for async content.
+That means SPAs, React/Vue apps, and anything behind a login wall comes back
+empty or broken.
 
-This tool spins up a headless Chromium (via Qt WebEngine) to render pages
-properly, then hands back the text and HTML. Runs in offscreen mode by default,
-no display needed.
+Qt Web Extractor spins up a headless Chromium (via Qt WebEngine) to render
+pages properly, then hands back the text and HTML. Runs in offscreen mode by
+default, no display needed.
 
 ## Install
 
@@ -125,7 +146,9 @@ more explicit control (see the file for setup instructions). This provides
 
 ### Server mode
 
-Run as a persistent HTTP service for Open WebUI or any other client:
+Run as a persistent HTTP service for any application — AI platforms (Open
+WebUI, etc.), web crawlers, automation scripts, monitoring tools, or your
+own projects:
 
 ```bash
 # start with defaults (127.0.0.1:8766)
