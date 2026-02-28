@@ -22,10 +22,12 @@ import os
 import sys
 import json
 import atexit
+import re
 import urllib.parse
 import urllib.request
 import shiboken6
 from PySide6.QtCore import QUrl, QTimer, QEventLoop, Signal, QByteArray, QBuffer, QIODevice
+from PySide6.QtGui import QTextDocument
 from PySide6.QtWidgets import QApplication
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtWebEngineCore import (
@@ -105,6 +107,9 @@ class _ExtractionResult:
 class _WebPage(QWebEnginePage):
     extraction_done = Signal(object)
 
+    # Only attempt HTML fallback when rendered text is shorter than this.
+    _FALLBACK_TRIGGER = 500
+
     def __init__(self, profile: QWebEngineProfile, timeout_ms: int = 30000):
         super().__init__(profile)
         self._timeout_ms = timeout_ms
@@ -165,7 +170,30 @@ class _WebPage(QWebEnginePage):
         if self._settled:
             return
         self._result.html = html
+
+        # If the page barely rendered, try extracting from the raw HTML.
+        text_len = len(self._result.text.strip())
+        if text_len < self._FALLBACK_TRIGGER:
+            fallback = self._text_from_html(html)
+            if len(fallback) > max(text_len, 1) * 5:
+                self._result.text = fallback
+
         self._finish()
+
+    _RE_SCRIPT = re.compile(r"<script[\s>].*?</script>", re.DOTALL | re.IGNORECASE)
+    _RE_STYLE = re.compile(r"<style[\s>].*?</style>", re.DOTALL | re.IGNORECASE)
+
+    @classmethod
+    def _text_from_html(cls, raw: str) -> str:
+        """Best-effort text extraction from raw HTML.
+
+        Strip script/style first — large inline JS confuses QTextDocument.
+        """
+        text = cls._RE_SCRIPT.sub("", raw)
+        text = cls._RE_STYLE.sub("", text)
+        doc = QTextDocument()
+        doc.setHtml(text)
+        return doc.toPlainText().strip()
 
     def _finish(self):
         self._settled = True
