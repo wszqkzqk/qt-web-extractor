@@ -120,12 +120,12 @@ class _WebPage(QWebEnginePage):
         self.loadFinished.connect(self._on_load_finished)
 
         # post-load JS settle delay
-        self._stability_timer = QTimer()
+        self._stability_timer = QTimer(self)
         self._stability_timer.setSingleShot(True)
         self._stability_timer.setInterval(2000)
         self._stability_timer.timeout.connect(self._extract_content)
 
-        self._timeout_timer = QTimer()
+        self._timeout_timer = QTimer(self)
         self._timeout_timer.setSingleShot(True)
         self._timeout_timer.setInterval(self._timeout_ms)
         self._timeout_timer.timeout.connect(self._on_timeout)
