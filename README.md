@@ -1,5 +1,7 @@
 # Qt Web Extractor
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/wszqkzqk/qt-web-extractor)
+
 A general-purpose web content extraction engine powered by Qt WebEngine
 (Chromium). Designed to extract fully-rendered text and HTML from modern web
 pages that rely on JavaScript, cookies, dynamic content loading, or
@@ -19,6 +21,8 @@ Also supports extracting text from PDF documents via Qt PDF.
   service with a simple REST API.
 - **Headless operation** — runs in Qt offscreen mode, no display or GPU
   required.
+- **Lightweight dependencies** — no standalone browser binaries, and no full
+  browser process overhead, saving resources.
 - **systemd integration** — ships with a service unit for easy deployment.
 - **Open WebUI compatible** — works as an external web page loader for
   [Open WebUI](https://github.com/open-webui/open-webui), and can also be
