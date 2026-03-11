@@ -23,11 +23,7 @@ import os
 import argparse
 import json
 
-from qt_web_extractor.extractor import QtWebExtractor, _detect_pdf
-
-
-def _is_pdf(url: str, force: bool = False, user_agent: str | None = None) -> bool:
-    return force or _detect_pdf(url, user_agent=user_agent)
+from qt_web_extractor.extractor import QtWebExtractor
 
 
 def _cmd_extract(args):
@@ -38,7 +34,7 @@ def _cmd_extract(args):
 
     results = []
     for url in args.urls:
-        if _is_pdf(url, getattr(args, "pdf", False), user_agent=args.user_agent):
+        if getattr(args, "pdf", False) or extractor.detect_pdf_url(url):
             results.append(extractor.extract_pdf(url))
         else:
             results.append(extractor.extract(url))

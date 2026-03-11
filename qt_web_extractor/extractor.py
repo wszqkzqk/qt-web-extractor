@@ -22,6 +22,7 @@ import os
 import sys
 import json
 import atexit
+import html as html_lib
 import re
 import urllib.parse
 import urllib.request
@@ -43,36 +44,6 @@ os.environ.setdefault(
     "QTWEBENGINE_CHROMIUM_FLAGS",
     "--disable-gpu --disable-software-rasterizer",
 )
-
-
-def _detect_pdf(
-    url: str,
-    user_agent: str | None = None,
-    timeout: int = 10,
-) -> bool:
-    """Check if *url* points to a PDF.
-
-    .pdf suffix is a fast path; otherwise for http(s) URLs a HEAD
-    request is sent to check Content-Type.
-    """
-    parsed = urllib.parse.urlparse(url)
-    path = parsed.path.rstrip("/").lower()
-
-    if path.endswith(".pdf"):
-        return True
-
-    if parsed.scheme not in ("http", "https"):
-        return False
-
-    try:
-        req = urllib.request.Request(url, method="HEAD")
-        if user_agent:
-            req.add_header("User-Agent", user_agent)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            ct = resp.headers.get("Content-Type", "")
-            return "application/pdf" in ct.lower()
-    except Exception:
-        return False
 
 class _ExtractionResult:
     __slots__ = ("url", "title", "text", "html", "error")
@@ -205,6 +176,14 @@ class _WebPage(QWebEnginePage):
 class QtWebExtractor:
     """Headless web content extractor using Qt WebEngine (Chromium)."""
 
+    _RE_TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+    _NETERROR_MARKERS = (
+        '<body class="neterror"',
+        "ERR_CONNECTION_",
+        "ERR_SSL_",
+        "ERR_HTTP2_",
+    )
+
     def __init__(
         self,
         timeout_ms: int = 30000,
@@ -218,6 +197,7 @@ class QtWebExtractor:
         self._storage_path = storage_path
         self._app = self._ensure_app()
         self._profile = self._create_profile()
+        self._http_user_agent: str = self._profile.httpUserAgent()
         self._pages: list[_WebPage] = []
 
         atexit.register(self._cleanup)
@@ -275,6 +255,60 @@ class QtWebExtractor:
                 pass
             self._profile = None
 
+    def detect_pdf_url(self, url: str, timeout: int = 10) -> bool:
+        """Check if *url* points to a PDF.
+
+        ``.pdf`` suffix is a fast path; otherwise for http(s) URLs a HEAD
+        request is sent to check Content-Type.
+        """
+        parsed = urllib.parse.urlparse(url)
+        path = parsed.path.rstrip("/").lower()
+
+        if path.endswith(".pdf"):
+            return True
+
+        if parsed.scheme not in ("http", "https"):
+            return False
+
+        try:
+            req = urllib.request.Request(url, method="HEAD")
+            req.add_header("User-Agent", self._http_user_agent)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                ct = resp.headers.get("Content-Type", "")
+                return "application/pdf" in ct.lower()
+        except Exception:
+            return False
+
+    @classmethod
+    def _looks_like_neterror_page(cls, result: _ExtractionResult) -> bool:
+        if not result.html:
+            return False
+        return any(marker in result.html for marker in cls._NETERROR_MARKERS)
+
+    def _extract_via_http_fallback(self, url: str) -> _ExtractionResult | None:
+        try:
+            req = urllib.request.Request(url)
+            req.add_header("User-Agent", self._http_user_agent)
+            with urllib.request.urlopen(req, timeout=self._timeout_ms // 1000) as resp:
+                charset = resp.headers.get_content_charset() or "utf-8"
+                raw_html = resp.read().decode(charset, errors="replace")
+                text = _WebPage._text_from_html(raw_html)
+                title_match = self._RE_TITLE.search(raw_html)
+                title = (
+                    html_lib.unescape(title_match.group(1)).strip()
+                    if title_match is not None
+                    else ""
+                )
+                return _ExtractionResult(
+                    url=resp.geturl(),
+                    title=title,
+                    text=text,
+                    html=raw_html,
+                    error="",
+                )
+        except Exception:
+            return None
+
     def extract(self, url: str) -> _ExtractionResult:
         loop = QEventLoop()
         result_holder: list[_ExtractionResult] = []
@@ -299,9 +333,16 @@ class QtWebExtractor:
         except ValueError:
             pass
 
-        return result_holder[0] if result_holder else _ExtractionResult(
+        result = result_holder[0] if result_holder else _ExtractionResult(
             url=url, error="Extraction failed: no result received"
         )
+
+        if result.error and self._looks_like_neterror_page(result):
+            fallback_result = self._extract_via_http_fallback(result.url or url)
+            if fallback_result is not None and fallback_result.text.strip():
+                return fallback_result
+
+        return result
 
     def extract_pdf(self, url_or_path: str) -> _ExtractionResult:
         """Extract text from a PDF file or URL using Qt PDF."""
@@ -317,8 +358,7 @@ class QtWebExtractor:
 
             if parsed.scheme in ("http", "https", "ftp"):
                 req = urllib.request.Request(url_or_path)
-                if self._user_agent:
-                    req.add_header("User-Agent", self._user_agent)
+                req.add_header("User-Agent", self._http_user_agent)
                 with urllib.request.urlopen(
                     req, timeout=self._timeout_ms // 1000
                 ) as resp:
