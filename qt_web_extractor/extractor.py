@@ -23,9 +23,12 @@ import sys
 import json
 import atexit
 import html as html_lib
+import logging
 import re
+import ssl
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 import shiboken6
 from PySide6.QtCore import QUrl, QTimer, QEventLoop, Signal, QByteArray, QBuffer, QIODevice
 from PySide6.QtGui import QTextDocument
@@ -44,6 +47,14 @@ os.environ.setdefault(
     "QTWEBENGINE_CHROMIUM_FLAGS",
     "--disable-gpu --disable-software-rasterizer",
 )
+
+log = logging.getLogger("qt-web-extractor")
+
+
+@dataclass(frozen=True)
+class _ProxyConfig:
+    proxies: dict[str, str]
+    no_proxy: tuple[str, ...] = ()
 
 class _ExtractionResult:
     __slots__ = ("url", "title", "text", "html", "error")
@@ -177,6 +188,7 @@ class QtWebExtractor:
     """Headless web content extractor using Qt WebEngine (Chromium)."""
 
     _RE_TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+    _SUPPORTED_PROXY_SCHEMES = {"http", "https"}
     _NETERROR_MARKERS = (
         '<body class="neterror"',
         "ERR_CONNECTION_",
@@ -190,20 +202,102 @@ class QtWebExtractor:
         user_agent: str | None = None,
         persist_cookies: bool = False,
         storage_path: str | None = None,
+        proxy: str | None = None,
     ):
         self._timeout_ms = timeout_ms
         self._user_agent = user_agent
         self._persist_cookies = persist_cookies
         self._storage_path = storage_path
+        self._proxy_config = self._resolve_proxy_config(proxy)
+        if self._proxy_config is not None:
+            self._apply_chromium_proxy(self._proxy_config)
         self._app = self._ensure_app()
         self._profile = self._create_profile()
         self._http_user_agent: str = self._profile.httpUserAgent()
+        self._ssl_context = self._create_ssl_context()
+        self._direct_url_opener = self._build_url_opener(proxies={})
+        if self._proxy_config is not None:
+            self._proxy_url_opener = self._build_url_opener(
+                proxies=self._proxy_config.proxies,
+            )
+        else:
+            self._proxy_url_opener = self._direct_url_opener
         self._pages: list[_WebPage] = []
 
         atexit.register(self._cleanup)
 
     def __del__(self):
         self._cleanup()
+
+    @staticmethod
+    def _parse_no_proxy(value: str | None) -> tuple[str, ...]:
+        if not value:
+            return ()
+        return tuple(part.strip() for part in value.split(",") if part.strip())
+
+    @classmethod
+    def _normalize_proxy_url(cls, proxy: str, *, strict: bool) -> str | None:
+        parsed = urllib.parse.urlsplit(proxy)
+        if parsed.scheme not in cls._SUPPORTED_PROXY_SCHEMES:
+            if strict:
+                raise ValueError("Only HTTP/HTTPS forward proxies are supported")
+            log.warning("Ignoring unsupported proxy URL: %s", proxy)
+            return None
+        if not parsed.netloc:
+            if strict:
+                raise ValueError(f"Invalid proxy URL: {proxy}")
+            log.warning("Ignoring invalid proxy URL: %s", proxy)
+            return None
+        return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+
+    @classmethod
+    def _resolve_proxy_config(cls, proxy: str | None) -> _ProxyConfig | None:
+        if proxy:
+            normalized = cls._normalize_proxy_url(proxy, strict=True)
+            assert normalized is not None
+            return _ProxyConfig(
+                proxies={"http": normalized, "https": normalized},
+                no_proxy=cls._parse_no_proxy(os.environ.get("NO_PROXY") or os.environ.get("no_proxy")),
+            )
+
+        env_proxies = urllib.request.getproxies_environment()
+        proxies: dict[str, str] = {}
+        for scheme in ("http", "https"):
+            proxy_url = env_proxies.get(scheme) or env_proxies.get("all")
+            if not proxy_url:
+                continue
+            normalized = cls._normalize_proxy_url(proxy_url, strict=False)
+            if normalized is not None:
+                proxies[scheme] = normalized
+
+        if not proxies:
+            return None
+
+        return _ProxyConfig(
+            proxies=proxies,
+            no_proxy=cls._parse_no_proxy(env_proxies.get("no")),
+        )
+
+    @staticmethod
+    def _format_chromium_proxy_server(proxies: dict[str, str]) -> str:
+        return ";".join(f"{scheme}={url}" for scheme, url in proxies.items())
+
+    @classmethod
+    def _apply_chromium_proxy(cls, config: _ProxyConfig):
+        """Inject proxy flags into the Chromium flags env var before Qt starts."""
+        key = "QTWEBENGINE_CHROMIUM_FLAGS"
+        existing = os.environ.get(key, "").strip()
+        additions: list[str] = []
+
+        if "--proxy-server" not in existing:
+            additions.append(
+                f"--proxy-server={cls._format_chromium_proxy_server(config.proxies)}"
+            )
+        if config.no_proxy and "--proxy-bypass-list" not in existing:
+            additions.append(f"--proxy-bypass-list={';'.join(config.no_proxy)}")
+
+        if additions:
+            os.environ[key] = " ".join(part for part in (existing, *additions) if part)
 
     @staticmethod
     def _ensure_app() -> QApplication:
@@ -236,6 +330,44 @@ class QtWebExtractor:
         s.setAttribute(QWebEngineSettings.WebAttribute.ScrollAnimatorEnabled, False)
 
         return profile
+
+    @staticmethod
+    def _create_ssl_context() -> ssl.SSLContext:
+        return ssl.create_default_context()
+
+    def _build_url_opener(self, proxies: dict[str, str]) -> urllib.request.OpenerDirector:
+        return urllib.request.build_opener(
+            urllib.request.HTTPSHandler(context=self._ssl_context),
+            urllib.request.ProxyHandler(proxies),
+        )
+
+    def _should_bypass_proxy(self, url: str) -> bool:
+        if self._proxy_config is None or not self._proxy_config.no_proxy:
+            return False
+        hostname = urllib.parse.urlsplit(url).hostname
+        if not hostname:
+            return False
+        return urllib.request.proxy_bypass(
+            hostname,
+            {"no": ",".join(self._proxy_config.no_proxy)},
+        )
+
+    @property
+    def proxy_summary(self) -> str:
+        if self._proxy_config is None:
+            return "off"
+        parts = [
+            f"{scheme}={self._proxy_config.proxies[scheme]}"
+            for scheme in ("http", "https")
+            if scheme in self._proxy_config.proxies
+        ]
+        if self._proxy_config.no_proxy:
+            parts.append(f"no_proxy={','.join(self._proxy_config.no_proxy)}")
+        return ", ".join(parts)
+
+    def _urlopen(self, request: urllib.request.Request, timeout: int | float):
+        opener = self._direct_url_opener if self._should_bypass_proxy(request.full_url) else self._proxy_url_opener
+        return opener.open(request, timeout=timeout)
 
     def _cleanup(self):
         for page in self._pages:
@@ -273,7 +405,7 @@ class QtWebExtractor:
         try:
             req = urllib.request.Request(url, method="HEAD")
             req.add_header("User-Agent", self._http_user_agent)
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with self._urlopen(req, timeout=timeout) as resp:
                 ct = resp.headers.get("Content-Type", "")
                 return "application/pdf" in ct.lower()
         except Exception:
@@ -285,11 +417,13 @@ class QtWebExtractor:
             return False
         return any(marker in result.html for marker in cls._NETERROR_MARKERS)
 
-    def _extract_via_http_fallback(self, url: str) -> _ExtractionResult | None:
+    def _extract_via_http_fallback(self, url: str) -> tuple[_ExtractionResult | None, str | None]:
         try:
             req = urllib.request.Request(url)
             req.add_header("User-Agent", self._http_user_agent)
-            with urllib.request.urlopen(req, timeout=self._timeout_ms // 1000) as resp:
+            req.add_header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            req.add_header("Accept-Language", "en-US,en;q=0.9")
+            with self._urlopen(req, timeout=self._timeout_ms // 1000) as resp:
                 charset = resp.headers.get_content_charset() or "utf-8"
                 raw_html = resp.read().decode(charset, errors="replace")
                 text = _WebPage._text_from_html(raw_html)
@@ -305,9 +439,10 @@ class QtWebExtractor:
                     text=text,
                     html=raw_html,
                     error="",
-                )
-        except Exception:
-            return None
+                ), None
+        except Exception as e:
+            log.warning("HTTP fallback failed for %s: %s", url, e)
+            return None, str(e)
 
     def extract(self, url: str) -> _ExtractionResult:
         loop = QEventLoop()
@@ -338,9 +473,11 @@ class QtWebExtractor:
         )
 
         if result.error and self._looks_like_neterror_page(result):
-            fallback_result = self._extract_via_http_fallback(result.url or url)
+            fallback_result, fallback_error = self._extract_via_http_fallback(result.url or url)
             if fallback_result is not None and fallback_result.text.strip():
                 return fallback_result
+            if fallback_error:
+                result.error = f"{result.error}; HTTP fallback failed: {fallback_error}"
 
         return result
 
@@ -359,9 +496,7 @@ class QtWebExtractor:
             if parsed.scheme in ("http", "https", "ftp"):
                 req = urllib.request.Request(url_or_path)
                 req.add_header("User-Agent", self._http_user_agent)
-                with urllib.request.urlopen(
-                    req, timeout=self._timeout_ms // 1000
-                ) as resp:
+                with self._urlopen(req, timeout=self._timeout_ms // 1000) as resp:
                     data = resp.read()
                     _byte_array = QByteArray(data)
                     _buffer = QBuffer(_byte_array)

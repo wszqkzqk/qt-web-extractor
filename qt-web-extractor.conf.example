@@ -14,3 +14,11 @@ TIMEOUT_MS=30000
 
 # API key for Bearer token auth (empty = no auth)
 #API_KEY=
+
+# Standard outbound proxy environment variables.
+# Applies to both Chromium (Qt WebEngine) and HTTP fallback requests.
+# Only HTTP/HTTPS forward proxies are supported end-to-end.
+#HTTPS_PROXY=http://127.0.0.1:7890
+#HTTP_PROXY=http://127.0.0.1:7890
+#ALL_PROXY=http://127.0.0.1:7890
+#NO_PROXY=127.0.0.1,localhost,.internal.example

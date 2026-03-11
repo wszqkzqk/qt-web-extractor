@@ -100,6 +100,9 @@ python -m qt_web_extractor --timeout 60000 https://example.com
 # custom User-Agent
 python -m qt_web_extractor --user-agent "MyBot/1.0" https://example.com
 
+# override proxy for this command
+python -m qt_web_extractor --proxy http://127.0.0.1:7890 https://example.com
+
 # multiple URLs
 python -m qt_web_extractor https://example.com https://example.org
 
@@ -126,6 +129,9 @@ print(result.error)  # empty string if all went well
 # extract from PDF
 result = extractor.extract_pdf("https://example.com/document.pdf")
 print(result.text)
+
+# override proxy explicitly (otherwise standard proxy env vars are used)
+extractor = QtWebExtractor(proxy="http://127.0.0.1:7890")
 ```
 
 ### Open WebUI integration
@@ -179,7 +185,21 @@ qt-web-extractor serve --host 0.0.0.0 --port 9000
 
 # with API key auth
 qt-web-extractor serve --api-key mysecretkey
+
+# override proxy for the service process
+qt-web-extractor serve --proxy http://127.0.0.1:7890
 ```
+
+Proxy handling follows standard environment variables by default:
+
+```bash
+export HTTPS_PROXY=http://127.0.0.1:7890
+export HTTP_PROXY=http://127.0.0.1:7890
+export ALL_PROXY=http://127.0.0.1:7890
+export NO_PROXY=127.0.0.1,localhost,.internal.example
+```
+
+The explicit `--proxy` flag overrides `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` for outbound requests, while `NO_PROXY` is still honored. Only HTTP/HTTPS forward proxies are supported end-to-end.
 
 API endpoints:
 - `POST /` with `{"urls": ["https://...", ...]}` → Open WebUI external loader
@@ -220,6 +240,10 @@ sudo systemctl enable --now qt-web-extractor
 | `TIMEOUT_MS` | `30000` | Page load timeout (ms) |
 | `USER_AGENT` | `""` | Custom User-Agent |
 | `API_KEY` | `""` | Bearer token auth (empty = no auth) |
+| `HTTPS_PROXY` | unset | HTTPS outbound proxy |
+| `HTTP_PROXY` | unset | HTTP outbound proxy |
+| `ALL_PROXY` | unset | Fallback outbound proxy |
+| `NO_PROXY` | unset | Hosts that bypass proxy |
 
 ## How it works
 

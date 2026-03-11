@@ -169,6 +169,7 @@ def serve(
     timeout_ms: int = 30000,
     user_agent: str | None = None,
     api_key: str = "",
+    proxy: str | None = None,
 ):
     """Start the extraction server. Blocks forever (runs Qt event loop)."""
     logging.basicConfig(
@@ -176,7 +177,7 @@ def serve(
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
 
-    extractor = QtWebExtractor(timeout_ms=timeout_ms, user_agent=user_agent)
+    extractor = QtWebExtractor(timeout_ms=timeout_ms, user_agent=user_agent, proxy=proxy)
     app = extractor._app
 
     extract_queue: queue.Queue[_ExtractRequest | None] = queue.Queue()
@@ -190,7 +191,12 @@ def serve(
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     log.info("Listening on http://%s:%d", host, port)
-    log.info("  timeout: %dms, auth: %s", timeout_ms, "on" if api_key else "off")
+    log.info(
+        "  timeout: %dms, auth: %s, proxy: %s",
+        timeout_ms,
+        "on" if api_key else "off",
+        extractor.proxy_summary,
+    )
 
     shutting_down = False
 

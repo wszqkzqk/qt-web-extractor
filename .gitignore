@@ -1,0 +1,4 @@
+src/
+pkg/
+qt-web-extractor/
+*.pkg.*

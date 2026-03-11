@@ -30,6 +30,7 @@ def _cmd_extract(args):
     extractor = QtWebExtractor(
         timeout_ms=args.timeout,
         user_agent=args.user_agent,
+        proxy=args.proxy,
     )
 
     results = []
@@ -66,6 +67,7 @@ def _cmd_serve(args):
         timeout_ms=args.timeout,
         user_agent=args.user_agent or None,
         api_key=args.api_key,
+        proxy=args.proxy,
     )
 
 
@@ -80,6 +82,12 @@ def main():
         flat.add_argument("urls", nargs="+", metavar="URL")
         flat.add_argument("--timeout", type=int, default=30000)
         flat.add_argument("--user-agent", type=str, default=None)
+        flat.add_argument(
+            "--proxy",
+            type=str,
+            default=None,
+            help="Override outbound HTTP/HTTPS proxy. Defaults to HTTPS_PROXY/HTTP_PROXY/ALL_PROXY.",
+        )
         flat.add_argument("--json", action="store_true", dest="output_json")
         flat.add_argument("--html", action="store_true")
         flat.add_argument("--pdf", action="store_true", help="Force PDF extraction")
@@ -96,6 +104,12 @@ def main():
     p_extract.add_argument("urls", nargs="+", metavar="URL")
     p_extract.add_argument("--timeout", type=int, default=30000)
     p_extract.add_argument("--user-agent", type=str, default=None)
+    p_extract.add_argument(
+        "--proxy",
+        type=str,
+        default=None,
+        help="Override outbound HTTP/HTTPS proxy. Defaults to HTTPS_PROXY/HTTP_PROXY/ALL_PROXY.",
+    )
     p_extract.add_argument("--json", action="store_true", dest="output_json")
     p_extract.add_argument("--html", action="store_true")
     p_extract.add_argument("--pdf", action="store_true", help="Force PDF extraction")
@@ -106,6 +120,12 @@ def main():
     p_serve.add_argument("--timeout", type=int, default=int(os.environ.get("TIMEOUT_MS", "30000")))
     p_serve.add_argument("--user-agent", type=str, default=os.environ.get("USER_AGENT", ""))
     p_serve.add_argument("--api-key", type=str, default=os.environ.get("API_KEY", ""))
+    p_serve.add_argument(
+        "--proxy",
+        type=str,
+        default=None,
+        help="Override outbound HTTP/HTTPS proxy. Defaults to HTTPS_PROXY/HTTP_PROXY/ALL_PROXY.",
+    )
 
     args = parser.parse_args()
 
