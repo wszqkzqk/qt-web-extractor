@@ -20,6 +20,9 @@
 
 import os
 import sys
+import time
+import io
+import zipfile
 import json
 import atexit
 import html as html_lib
@@ -30,7 +33,15 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 import shiboken6
-from PySide6.QtCore import QUrl, QTimer, QEventLoop, Signal, QByteArray, QBuffer, QIODevice
+from PySide6.QtCore import (
+    QUrl,
+    QTimer,
+    QEventLoop,
+    Signal,
+    QByteArray,
+    QBuffer,
+    QIODevice,
+)
 from PySide6.QtGui import QTextDocument
 from PySide6.QtWidgets import QApplication
 from PySide6.QtPdf import QPdfDocument
@@ -55,6 +66,7 @@ log = logging.getLogger("qt-web-extractor")
 class _ProxyConfig:
     proxies: dict[str, str]
     no_proxy: tuple[str, ...] = ()
+
 
 class _ExtractionResult:
     __slots__ = ("url", "title", "text", "html", "error")
@@ -137,7 +149,9 @@ class _WebPage(QWebEnginePage):
         if timed_out:
             self._result.error = "Timed out (partial content may be available)"
         elif not self._load_ok:
-            self._result.error = "Page load reported failure (content may be incomplete)"
+            self._result.error = (
+                "Page load reported failure (content may be incomplete)"
+            )
 
         # Inject JS to serialize the Composed Tree (Shadow DOM + Slots) safely and efficiently
         js = """(function() {
@@ -267,8 +281,12 @@ class QtWebExtractor:
         persist_cookies: bool = False,
         storage_path: str | None = None,
         proxy: str | None = None,
+        mineru_api_key: str = "",
+        mineru_timeout_ms: int = 300000,
     ):
         self._timeout_ms = timeout_ms
+        self._mineru_api_key = mineru_api_key
+        self._mineru_timeout_ms = mineru_timeout_ms
         self._user_agent = user_agent
         self._persist_cookies = persist_cookies
         self._storage_path = storage_path
@@ -321,7 +339,9 @@ class QtWebExtractor:
             assert normalized is not None
             return _ProxyConfig(
                 proxies={"http": normalized, "https": normalized},
-                no_proxy=cls._parse_no_proxy(os.environ.get("NO_PROXY") or os.environ.get("no_proxy")),
+                no_proxy=cls._parse_no_proxy(
+                    os.environ.get("NO_PROXY") or os.environ.get("no_proxy")
+                ),
             )
 
         env_proxies = urllib.request.getproxies_environment()
@@ -399,7 +419,9 @@ class QtWebExtractor:
     def _create_ssl_context() -> ssl.SSLContext:
         return ssl.create_default_context()
 
-    def _build_url_opener(self, proxies: dict[str, str]) -> urllib.request.OpenerDirector:
+    def _build_url_opener(
+        self, proxies: dict[str, str]
+    ) -> urllib.request.OpenerDirector:
         return urllib.request.build_opener(
             urllib.request.HTTPSHandler(context=self._ssl_context),
             urllib.request.ProxyHandler(proxies),
@@ -430,7 +452,11 @@ class QtWebExtractor:
         return ", ".join(parts)
 
     def _urlopen(self, request: urllib.request.Request, timeout: int | float):
-        opener = self._direct_url_opener if self._should_bypass_proxy(request.full_url) else self._proxy_url_opener
+        opener = (
+            self._direct_url_opener
+            if self._should_bypass_proxy(request.full_url)
+            else self._proxy_url_opener
+        )
         return opener.open(request, timeout=timeout)
 
     def _cleanup(self):
@@ -481,11 +507,16 @@ class QtWebExtractor:
             return False
         return any(marker in result.html for marker in cls._NETERROR_MARKERS)
 
-    def _extract_via_http_fallback(self, url: str) -> tuple[_ExtractionResult | None, str | None]:
+    def _extract_via_http_fallback(
+        self, url: str
+    ) -> tuple[_ExtractionResult | None, str | None]:
         try:
             req = urllib.request.Request(url)
             req.add_header("User-Agent", self._http_user_agent)
-            req.add_header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            req.add_header(
+                "Accept",
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            )
             req.add_header("Accept-Language", "en-US,en;q=0.9")
             with self._urlopen(req, timeout=self._timeout_ms // 1000) as resp:
                 charset = resp.headers.get_content_charset() or "utf-8"
@@ -497,13 +528,16 @@ class QtWebExtractor:
                     if title_match is not None
                     else ""
                 )
-                return _ExtractionResult(
-                    url=resp.geturl(),
-                    title=title,
-                    text=text,
-                    html=raw_html,
-                    error="",
-                ), None
+                return (
+                    _ExtractionResult(
+                        url=resp.geturl(),
+                        title=title,
+                        text=text,
+                        html=raw_html,
+                        error="",
+                    ),
+                    None,
+                )
         except Exception as e:
             log.warning("HTTP fallback failed for %s: %s", url, e)
             return None, str(e)
@@ -532,12 +566,18 @@ class QtWebExtractor:
         except ValueError:
             pass
 
-        result = result_holder[0] if result_holder else _ExtractionResult(
-            url=url, error="Extraction failed: no result received"
+        result = (
+            result_holder[0]
+            if result_holder
+            else _ExtractionResult(
+                url=url, error="Extraction failed: no result received"
+            )
         )
 
         if result.error and self._looks_like_neterror_page(result):
-            fallback_result, fallback_error = self._extract_via_http_fallback(result.url or url)
+            fallback_result, fallback_error = self._extract_via_http_fallback(
+                result.url or url
+            )
             if fallback_result is not None and fallback_result.text.strip():
                 return fallback_result
             if fallback_error:
@@ -545,9 +585,155 @@ class QtWebExtractor:
 
         return result
 
+    def _sleep_qt(self, ms: int):
+        loop = QEventLoop()
+        QTimer.singleShot(ms, loop.quit)
+        loop.exec()
+
+    def _extract_mineru(self, url_or_path: str) -> str:
+        if not self._mineru_api_key:
+            raise ValueError("No Mineru API key provided")
+
+        start_time = time.time()
+        timeout_s = self._mineru_timeout_ms / 1000.0
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self._mineru_api_key}",
+        }
+
+        parsed = urllib.parse.urlparse(url_or_path)
+        is_remote = parsed.scheme in ("http", "https", "ftp")
+
+        # The URL for extraction depends on remote vs local
+        if is_remote:
+            data = {"url": url_or_path, "model_version": "vlm"}
+            req = urllib.request.Request(
+                "https://mineru.net/api/v4/extract/task",
+                data=json.dumps(data).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            with self._urlopen(req, timeout=self._timeout_ms // 1000) as resp:
+                resp_data = json.loads(resp.read().decode("utf-8"))
+                if resp_data.get("code") != 0:
+                    raise Exception(f"Mineru API error: {resp_data.get('msg')}")
+                task_id = resp_data["data"]["task_id"]
+
+            while True:
+                if time.time() - start_time > timeout_s:
+                    raise TimeoutError("Mineru API polling timed out")
+
+                req_poll = urllib.request.Request(
+                    f"https://mineru.net/api/v4/extract/task/{task_id}",
+                    headers={"Authorization": f"Bearer {self._mineru_api_key}"},
+                )
+                with self._urlopen(req_poll, timeout=self._timeout_ms // 1000) as resp:
+                    poll_data = json.loads(resp.read().decode("utf-8"))
+                    state = poll_data["data"]["state"]
+
+                    if state == "done":
+                        full_zip_url = poll_data["data"]["full_zip_url"]
+                        break
+                    elif state == "failed":
+                        raise Exception(
+                            f"Mineru extraction failed: {poll_data['data'].get('err_msg')}"
+                        )
+
+                self._sleep_qt(3000)
+
+        else:
+            local_path = parsed.path if parsed.scheme == "file" else url_or_path
+            file_name = os.path.basename(local_path)
+            data = {"files": [{"name": file_name}], "model_version": "vlm"}
+            req = urllib.request.Request(
+                "https://mineru.net/api/v4/file-urls/batch",
+                data=json.dumps(data).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            with self._urlopen(req, timeout=self._timeout_ms // 1000) as resp:
+                resp_data = json.loads(resp.read().decode("utf-8"))
+                if resp_data.get("code") != 0:
+                    raise Exception(f"Mineru batch API error: {resp_data.get('msg')}")
+                batch_id = resp_data["data"]["batch_id"]
+                upload_url = resp_data["data"]["file_urls"][0]
+
+            with open(local_path, "rb") as f:
+                file_data = f.read()
+
+            req_up = urllib.request.Request(upload_url, data=file_data, method="PUT")
+            with self._urlopen(req_up, timeout=self._timeout_ms // 1000) as resp:
+                if resp.status not in (200, 201):
+                    raise Exception(
+                        f"Failed to upload local file to Mineru: HTTP {resp.status}"
+                    )
+
+            while True:
+                if time.time() - start_time > timeout_s:
+                    raise TimeoutError("Mineru API polling timed out")
+
+                req_poll = urllib.request.Request(
+                    f"https://mineru.net/api/v4/extract-results/batch/{batch_id}",
+                    headers={"Authorization": f"Bearer {self._mineru_api_key}"},
+                )
+                with self._urlopen(req_poll, timeout=self._timeout_ms // 1000) as resp:
+                    poll_data = json.loads(resp.read().decode("utf-8"))
+                    if poll_data.get("code") != 0:
+                        raise Exception(
+                            f"Mineru batch poll error: {poll_data.get('msg')}"
+                        )
+
+                    res_list = poll_data["data"].get("extract_result", [])
+                    if not res_list:
+                        raise Exception("Mineru batch poll returned empty result list")
+
+                    target_res = res_list[0]
+                    state = target_res["state"]
+
+                    if state == "done":
+                        full_zip_url = target_res.get("full_zip_url")
+                        if not full_zip_url:
+                            raise Exception(
+                                "done state reached but full_zip_url missing"
+                            )
+                        break
+                    elif state == "failed":
+                        raise Exception(
+                            f"Mineru batch extraction failed: {target_res.get('err_msg')}"
+                        )
+
+                self._sleep_qt(3000)
+
+        if not full_zip_url:
+            raise Exception("Missing full_zip_url in Mineru response")
+
+        req_zip = urllib.request.Request(full_zip_url)
+        with self._urlopen(req_zip, timeout=self._timeout_ms // 1000) as resp:
+            zip_data = resp.read()
+
+        with zipfile.ZipFile(io.BytesIO(zip_data)) as z:
+            names = z.namelist()
+            matched_md = next((n for n in names if n.endswith("full.md")), None)
+            if not matched_md:
+                raise Exception("full.md not found in returned Zip file")
+
+            with z.open(matched_md) as fmd:
+                md_text = fmd.read().decode("utf-8")
+
+        return md_text
+
     def extract_pdf(self, url_or_path: str) -> _ExtractionResult:
-        """Extract text from a PDF file or URL using Qt PDF."""
+        """Extract text from a PDF file or URL using Mineru API (if available) or Qt PDF."""
         result = _ExtractionResult(url=url_or_path)
+
+        if getattr(self, "_mineru_api_key", ""):
+            try:
+                md_text = self._extract_mineru(url_or_path)
+                result.text = md_text
+                result.title = os.path.basename(url_or_path)
+                return result
+            except Exception as e:
+                log.warning("Mineru extraction failed (%s), falling back to QtPdf.", e)
 
         # prevent GC while doc is in use
         _buffer: QBuffer | None = None
