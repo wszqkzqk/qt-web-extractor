@@ -2,15 +2,13 @@
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/wszqkzqk/qt-web-extractor)
 
-A general-purpose web content extraction engine powered by Qt WebEngine
-(Chromium). Designed to extract fully-rendered text and HTML from modern web
-pages that rely on JavaScript, cookies, dynamic content loading, or
-client-side rendering — scenarios where plain HTTP fetchers fall short.
+A general-purpose web content extraction engine powered by Qt WebEngine (Chromium). Designed to extract fully-rendered content from modern web pages that rely on JavaScript, cookies, dynamic content loading, or client-side rendering — transforming complex, noisy web structures directly into clean **Markdown** text format, preserving links and readability for LLM processing or downstream pipelines.
 
 Also supports extracting text from PDF documents via Qt PDF.
 
 **Key features:**
 
+- **Smart Markdown formatting** — converts fully rendered web pages directly into clean Markdown, preserving links and structure without the noise of raw HTML. Ideal for feeding text into LLMs.
 - **Full JavaScript rendering** — handles SPAs, React/Vue/Angular apps, and
   any page that requires JS to display content.
 - **Cookie & session support** — access pages behind login walls or consent
@@ -85,7 +83,7 @@ pip install -e .
 ### CLI
 
 ```bash
-# plain text
+# Clean Markdown text (preserves links and structure)
 python -m qt_web_extractor https://example.com
 
 # JSON output

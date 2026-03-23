@@ -153,12 +153,22 @@ class _WebPage(QWebEnginePage):
             return
         self._result.html = html
 
-        # If the page barely rendered, try extracting from the raw HTML.
+        # Convert the current HTML to Markdown to preserve links
+        doc = QTextDocument()
+        doc.setHtml(html)
+        md_text = doc.toMarkdown().strip()
+        
+        # Compare the WebEngine's raw plain text size against our trigger.
         text_len = len(self._result.text.strip())
         if text_len < self._FALLBACK_TRIGGER:
             fallback = self._text_from_html(html)
             if len(fallback) > max(text_len, 1) * 5:
+                # If fallback yields significantly more text, use it
                 self._result.text = fallback
+            else:
+                self._result.text = md_text
+        else:
+            self._result.text = md_text
 
         self._finish()
 
@@ -167,7 +177,7 @@ class _WebPage(QWebEnginePage):
 
     @classmethod
     def _text_from_html(cls, raw: str) -> str:
-        """Best-effort text extraction from raw HTML.
+        """Best-effort text extraction from raw HTML, preserving links as Markdown.
 
         Strip script/style first — large inline JS confuses QTextDocument.
         """
@@ -175,7 +185,7 @@ class _WebPage(QWebEnginePage):
         text = cls._RE_STYLE.sub("", text)
         doc = QTextDocument()
         doc.setHtml(text)
-        return doc.toPlainText().strip()
+        return doc.toMarkdown().strip()
 
     def _finish(self):
         self._settled = True
