@@ -89,9 +89,6 @@ class _ExtractionResult:
 class _WebPage(QWebEnginePage):
     extraction_done = Signal(object)
 
-    # Only attempt HTML fallback when rendered text is shorter than this.
-    _FALLBACK_TRIGGER = 500
-
     def __init__(self, profile: QWebEngineProfile, timeout_ms: int = 30000):
         super().__init__(profile)
         self._timeout_ms = timeout_ms
@@ -136,56 +133,60 @@ class _WebPage(QWebEnginePage):
             return
         self._result.title = self.title()
         self._result.url = self.url().toString()
-        self.toPlainText(self._on_text_ready)
+        self.toHtml(self._on_html_ready)
         if timed_out:
             self._result.error = "Timed out (partial content may be available)"
         elif not self._load_ok:
             self._result.error = "Page load reported failure (content may be incomplete)"
-
-    def _on_text_ready(self, text: str):
-        if self._settled:
-            return
-        self._result.text = text
-        self.toHtml(self._on_html_ready)
 
     def _on_html_ready(self, html: str):
         if self._settled:
             return
         self._result.html = html
 
-        # Convert the current HTML to Markdown to preserve links
-        doc = QTextDocument()
-        doc.setHtml(html)
-        md_text = doc.toMarkdown().strip()
-        
-        # Compare the WebEngine's raw plain text size against our trigger.
-        text_len = len(self._result.text.strip())
-        if text_len < self._FALLBACK_TRIGGER:
-            fallback = self._text_from_html(html)
-            if len(fallback) > max(text_len, 1) * 5:
-                # If fallback yields significantly more text, use it
-                self._result.text = fallback
-            else:
-                self._result.text = md_text
-        else:
-            self._result.text = md_text
+        # Always remove script/style before Markdown conversion.
+        self._result.text = self._text_from_html(html)
 
         self._finish()
 
     _RE_SCRIPT = re.compile(r"<script[\s>].*?</script>", re.DOTALL | re.IGNORECASE)
     _RE_STYLE = re.compile(r"<style[\s>].*?</style>", re.DOTALL | re.IGNORECASE)
+    _RE_BODY = re.compile(r"<body[^>]*>(.*?)</body>", re.DOTALL | re.IGNORECASE)
+    _RE_CONTENT_START = re.compile(r"<(main|article|h1|h2|section|p)\b", re.IGNORECASE)
+
+    @staticmethod
+    def _qt_html_to_markdown(raw: str) -> str:
+        doc = QTextDocument()
+        doc.setHtml(raw)
+        return doc.toMarkdown().strip()
 
     @classmethod
     def _text_from_html(cls, raw: str) -> str:
         """Best-effort text extraction from raw HTML, preserving links as Markdown.
 
-        Strip script/style first — large inline JS confuses QTextDocument.
+        Strip script/style first, then reduce leading layout noise when needed.
         """
         text = cls._RE_SCRIPT.sub("", raw)
         text = cls._RE_STYLE.sub("", text)
+
+        md = cls._qt_html_to_markdown(text)
+        if md:
+            return md
+
+        body_match = cls._RE_BODY.search(text)
+        body = body_match.group(1) if body_match is not None else text
+        start_match = cls._RE_CONTENT_START.search(body)
+        if start_match is not None and start_match.start() > 0:
+            body = body[start_match.start():]
+
+        narrowed = f"<html><body>{body}</body></html>"
+        md = cls._qt_html_to_markdown(narrowed)
+        if md:
+            return md
+
         doc = QTextDocument()
-        doc.setHtml(text)
-        return doc.toMarkdown().strip()
+        doc.setHtml(narrowed)
+        return doc.toPlainText().strip()
 
     def _finish(self):
         self._settled = True
