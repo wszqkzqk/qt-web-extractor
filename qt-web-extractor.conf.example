@@ -28,3 +28,6 @@ TIMEOUT_MS=30000
 
 # Timeout for Mineru API polling in milliseconds, default 300000 (5 minutes)
 #MINERU_TIMEOUT_MS=300000
+
+# Mineru API base URL, supports self-hosted deployments
+#MINERU_BASE_URL=https://mineru.net

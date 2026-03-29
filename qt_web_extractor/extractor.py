@@ -38,9 +38,16 @@ from PySide6.QtCore import (
     QTimer,
     QEventLoop,
     Signal,
+    QFile,
     QByteArray,
     QBuffer,
     QIODevice,
+)
+from PySide6.QtNetwork import (
+    QNetworkAccessManager,
+    QNetworkRequest,
+    QNetworkReply,
+    QNetworkProxy,
 )
 from PySide6.QtGui import QTextDocument
 from PySide6.QtWidgets import QApplication
@@ -283,10 +290,12 @@ class QtWebExtractor:
         proxy: str | None = None,
         mineru_api_key: str = "",
         mineru_timeout_ms: int = 300000,
+        mineru_base_url: str = "https://mineru.net",
     ):
         self._timeout_ms = timeout_ms
         self._mineru_api_key = mineru_api_key
         self._mineru_timeout_ms = mineru_timeout_ms
+        self._mineru_base_url = self._normalize_mineru_base_url(mineru_base_url)
         self._user_agent = user_agent
         self._persist_cookies = persist_cookies
         self._storage_path = storage_path
@@ -304,6 +313,11 @@ class QtWebExtractor:
             )
         else:
             self._proxy_url_opener = self._direct_url_opener
+        self._direct_net_manager = self._create_net_manager(use_proxy=False)
+        if self._proxy_config is not None:
+            self._proxy_net_manager = self._create_net_manager(use_proxy=True)
+        else:
+            self._proxy_net_manager = self._direct_net_manager
         self._pages: list[_WebPage] = []
 
         atexit.register(self._cleanup)
@@ -419,6 +433,46 @@ class QtWebExtractor:
     def _create_ssl_context() -> ssl.SSLContext:
         return ssl.create_default_context()
 
+    @staticmethod
+    def _normalize_mineru_base_url(base_url: str) -> str:
+        candidate = (base_url or "https://mineru.net").strip().rstrip("/")
+        parsed = urllib.parse.urlsplit(candidate)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError(
+                f"Invalid MinerU base URL: {base_url!r}; expected http(s)://host"
+            )
+        return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+
+    def _create_net_manager(self, use_proxy: bool) -> QNetworkAccessManager:
+        manager = QNetworkAccessManager(self._app)
+        if use_proxy and self._proxy_config is not None:
+            proxy_url = self._proxy_config.proxies.get(
+                "https"
+            ) or self._proxy_config.proxies.get("http")
+            if proxy_url:
+                parsed = urllib.parse.urlsplit(proxy_url)
+                host = parsed.hostname or ""
+                port = parsed.port or (443 if parsed.scheme == "https" else 80)
+                proxy = QNetworkProxy(QNetworkProxy.ProxyType.HttpProxy, host, port)
+                if parsed.username:
+                    proxy.setUser(urllib.parse.unquote(parsed.username))
+                if parsed.password:
+                    proxy.setPassword(urllib.parse.unquote(parsed.password))
+                manager.setProxy(proxy)
+                return manager
+
+        manager.setProxy(QNetworkProxy(QNetworkProxy.ProxyType.NoProxy))
+        return manager
+
+    def _select_net_manager(self, url: str) -> QNetworkAccessManager:
+        if self._direct_net_manager is None or self._proxy_net_manager is None:
+            raise RuntimeError("Network manager has been cleaned up")
+        if self._proxy_config is None:
+            return self._direct_net_manager
+        if self._should_bypass_proxy(url):
+            return self._direct_net_manager
+        return self._proxy_net_manager
+
     def _build_url_opener(
         self, proxies: dict[str, str]
     ) -> urllib.request.OpenerDirector:
@@ -476,6 +530,8 @@ class QtWebExtractor:
             except RuntimeError:
                 pass
             self._profile = None
+        self._direct_net_manager = None
+        self._proxy_net_manager = None
 
     def detect_pdf_url(self, url: str, timeout: int = 10) -> bool:
         """Check if *url* points to a PDF.
@@ -585,10 +641,131 @@ class QtWebExtractor:
 
         return result
 
-    def _sleep_qt(self, ms: int):
+    @staticmethod
+    def _sleep_qt(ms: int):
         loop = QEventLoop()
         QTimer.singleShot(ms, loop.quit)
         loop.exec()
+
+    def _mineru_api_url(self, path: str) -> str:
+        if not path.startswith("/"):
+            path = f"/{path}"
+        return f"{self._mineru_base_url}{path}"
+
+    def _wait_for_reply(self, reply: QNetworkReply, timeout_ms: int):
+        loop = QEventLoop()
+        timer = QTimer()
+        timer.setSingleShot(True)
+        timed_out = {"value": False}
+
+        def on_timeout():
+            timed_out["value"] = True
+            reply.abort()
+            loop.quit()
+
+        timer.timeout.connect(on_timeout)
+        reply.finished.connect(loop.quit)
+        timer.start(timeout_ms)
+        loop.exec()
+
+        timer.stop()
+        try:
+            reply.finished.disconnect(loop.quit)
+        except (RuntimeError, TypeError):
+            pass
+        timer.deleteLater()
+
+        if timed_out["value"]:
+            raise TimeoutError("MinerU network request timed out")
+
+    def _request_bytes(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        data: bytes | None = None,
+        upload_device: QIODevice | None = None,
+        timeout_ms: int | None = None,
+    ) -> tuple[int, bytes]:
+        req = QNetworkRequest(QUrl(url))
+        req.setAttribute(
+            QNetworkRequest.Attribute.RedirectPolicyAttribute,
+            QNetworkRequest.RedirectPolicy.NoLessSafeRedirectPolicy,
+        )
+        for key, value in (headers or {}).items():
+            req.setRawHeader(
+                key.encode("utf-8"),
+                str(value).encode("utf-8"),
+            )
+
+        manager = self._select_net_manager(url)
+        verb = method.upper()
+        payload = QByteArray(data or b"")
+        if verb == "GET":
+            reply = manager.get(req)
+        elif verb == "POST":
+            if upload_device is not None:
+                reply = manager.post(req, upload_device)
+            else:
+                reply = manager.post(req, payload)
+        elif verb == "PUT":
+            if upload_device is not None:
+                reply = manager.put(req, upload_device)
+            else:
+                reply = manager.put(req, payload)
+        else:
+            reply = manager.sendCustomRequest(req, verb.encode("ascii"), payload)
+
+        effective_timeout_ms = (
+            timeout_ms
+            if timeout_ms is not None
+            else max(5000, min(120000, self._mineru_timeout_ms))
+        )
+        self._wait_for_reply(reply, effective_timeout_ms)
+
+        raw = bytes(reply.readAll().data())
+        status_attr = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+        try:
+            status_code = int(status_attr) if status_attr is not None else 0
+        except (TypeError, ValueError):
+            status_code = 0
+
+        err = reply.error()
+        err_str = reply.errorString()
+        reply.deleteLater()
+
+        if err != QNetworkReply.NetworkError.NoError:
+            raise RuntimeError(f"{verb} {url} failed: {err_str}")
+
+        if status_code >= 400:
+            snippet = raw[:200].decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"{verb} {url} failed with HTTP {status_code}: {snippet}"
+            )
+
+        return status_code, raw
+
+    def _request_json(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        data: bytes | None = None,
+        timeout_ms: int | None = None,
+    ) -> dict:
+        _, raw = self._request_bytes(
+            method,
+            url,
+            headers=headers,
+            data=data,
+            timeout_ms=timeout_ms,
+        )
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"Invalid JSON response from {url}: {e}") from e
 
     def _extract_mineru(self, url_or_path: str) -> str:
         if not self._mineru_api_key:
@@ -596,10 +773,13 @@ class QtWebExtractor:
 
         start_time = time.time()
         timeout_s = self._mineru_timeout_ms / 1000.0
+        request_timeout_ms = max(5000, min(120000, self._mineru_timeout_ms))
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self._mineru_api_key}",
         }
+        auth_headers = {"Authorization": f"Bearer {self._mineru_api_key}"}
+        full_zip_url = ""
 
         parsed = urllib.parse.urlparse(url_or_path)
         is_remote = parsed.scheme in ("http", "https", "ftp")
@@ -607,109 +787,130 @@ class QtWebExtractor:
         # The URL for extraction depends on remote vs local
         if is_remote:
             data = {"url": url_or_path, "model_version": "vlm"}
-            req = urllib.request.Request(
-                "https://mineru.net/api/v4/extract/task",
-                data=json.dumps(data).encode("utf-8"),
+            resp_data = self._request_json(
+                "POST",
+                self._mineru_api_url("/api/v4/extract/task"),
                 headers=headers,
-                method="POST",
+                data=json.dumps(data).encode("utf-8"),
+                timeout_ms=request_timeout_ms,
             )
-            with self._urlopen(req, timeout=self._timeout_ms // 1000) as resp:
-                resp_data = json.loads(resp.read().decode("utf-8"))
-                if resp_data.get("code") != 0:
-                    raise Exception(f"Mineru API error: {resp_data.get('msg')}")
-                task_id = resp_data["data"]["task_id"]
+            if resp_data.get("code") != 0:
+                raise Exception(f"Mineru API error: {resp_data.get('msg')}")
+            task_id = (resp_data.get("data") or {}).get("task_id")
+            if not task_id:
+                raise Exception("Mineru API returned missing task_id")
 
             while True:
                 if time.time() - start_time > timeout_s:
                     raise TimeoutError("Mineru API polling timed out")
 
-                req_poll = urllib.request.Request(
-                    f"https://mineru.net/api/v4/extract/task/{task_id}",
-                    headers={"Authorization": f"Bearer {self._mineru_api_key}"},
+                poll_data = self._request_json(
+                    "GET",
+                    self._mineru_api_url(f"/api/v4/extract/task/{task_id}"),
+                    headers=auth_headers,
+                    timeout_ms=request_timeout_ms,
                 )
-                with self._urlopen(req_poll, timeout=self._timeout_ms // 1000) as resp:
-                    poll_data = json.loads(resp.read().decode("utf-8"))
-                    state = poll_data["data"]["state"]
+                state_data = poll_data.get("data") or {}
+                state = state_data.get("state")
 
-                    if state == "done":
-                        full_zip_url = poll_data["data"]["full_zip_url"]
-                        break
-                    elif state == "failed":
-                        raise Exception(
-                            f"Mineru extraction failed: {poll_data['data'].get('err_msg')}"
-                        )
+                if state == "done":
+                    full_zip_url = state_data.get("full_zip_url", "")
+                    break
+                if state == "failed":
+                    raise Exception(
+                        f"Mineru extraction failed: {state_data.get('err_msg')}"
+                    )
 
                 self._sleep_qt(3000)
 
         else:
-            local_path = parsed.path if parsed.scheme == "file" else url_or_path
-            file_name = os.path.basename(local_path)
-            data = {"files": [{"name": file_name}], "model_version": "vlm"}
-            req = urllib.request.Request(
-                "https://mineru.net/api/v4/file-urls/batch",
-                data=json.dumps(data).encode("utf-8"),
-                headers=headers,
-                method="POST",
+            local_path = (
+                urllib.parse.unquote(parsed.path)
+                if parsed.scheme == "file"
+                else url_or_path
             )
-            with self._urlopen(req, timeout=self._timeout_ms // 1000) as resp:
-                resp_data = json.loads(resp.read().decode("utf-8"))
-                if resp_data.get("code") != 0:
-                    raise Exception(f"Mineru batch API error: {resp_data.get('msg')}")
-                batch_id = resp_data["data"]["batch_id"]
-                upload_url = resp_data["data"]["file_urls"][0]
+            if parsed.scheme == "file" and parsed.netloc:
+                local_path = f"//{parsed.netloc}{local_path}"
+            file_name = os.path.basename(local_path)
+            if not file_name:
+                raise Exception(f"Invalid local PDF path: {url_or_path}")
 
-            with open(local_path, "rb") as f:
-                file_data = f.read()
+            data = {"files": [{"name": file_name}], "model_version": "vlm"}
+            resp_data = self._request_json(
+                "POST",
+                self._mineru_api_url("/api/v4/file-urls/batch"),
+                headers=headers,
+                data=json.dumps(data).encode("utf-8"),
+                timeout_ms=request_timeout_ms,
+            )
+            if resp_data.get("code") != 0:
+                raise Exception(f"Mineru batch API error: {resp_data.get('msg')}")
 
-            req_up = urllib.request.Request(upload_url, data=file_data, method="PUT")
-            with self._urlopen(req_up, timeout=self._timeout_ms // 1000) as resp:
-                if resp.status not in (200, 201):
-                    raise Exception(
-                        f"Failed to upload local file to Mineru: HTTP {resp.status}"
-                    )
+            batch_data = resp_data.get("data") or {}
+            batch_id = batch_data.get("batch_id")
+            file_urls = batch_data.get("file_urls") or []
+            upload_url = file_urls[0] if file_urls else ""
+            if not batch_id or not upload_url:
+                raise Exception(
+                    "Mineru batch API response missing batch_id or upload_url"
+                )
+
+            upload_file = QFile(local_path)
+            if not upload_file.open(QIODevice.OpenModeFlag.ReadOnly):
+                raise OSError(f"Failed to open local PDF: {local_path}")
+
+            try:
+                self._request_bytes(
+                    "PUT",
+                    upload_url,
+                    upload_device=upload_file,
+                    timeout_ms=request_timeout_ms,
+                )
+            finally:
+                upload_file.close()
+
 
             while True:
                 if time.time() - start_time > timeout_s:
                     raise TimeoutError("Mineru API polling timed out")
 
-                req_poll = urllib.request.Request(
-                    f"https://mineru.net/api/v4/extract-results/batch/{batch_id}",
-                    headers={"Authorization": f"Bearer {self._mineru_api_key}"},
+                poll_data = self._request_json(
+                    "GET",
+                    self._mineru_api_url(f"/api/v4/extract-results/batch/{batch_id}"),
+                    headers=auth_headers,
+                    timeout_ms=request_timeout_ms,
                 )
-                with self._urlopen(req_poll, timeout=self._timeout_ms // 1000) as resp:
-                    poll_data = json.loads(resp.read().decode("utf-8"))
-                    if poll_data.get("code") != 0:
-                        raise Exception(
-                            f"Mineru batch poll error: {poll_data.get('msg')}"
-                        )
+                if poll_data.get("code") != 0:
+                    raise Exception(f"Mineru batch poll error: {poll_data.get('msg')}")
 
-                    res_list = poll_data["data"].get("extract_result", [])
-                    if not res_list:
-                        raise Exception("Mineru batch poll returned empty result list")
+                res_list = (poll_data.get("data") or {}).get("extract_result", [])
+                if not res_list:
+                    raise Exception("Mineru batch poll returned empty result list")
 
-                    target_res = res_list[0]
-                    state = target_res["state"]
+                target_res = res_list[0]
+                state = target_res.get("state")
 
-                    if state == "done":
-                        full_zip_url = target_res.get("full_zip_url")
-                        if not full_zip_url:
-                            raise Exception(
-                                "done state reached but full_zip_url missing"
-                            )
-                        break
-                    elif state == "failed":
-                        raise Exception(
-                            f"Mineru batch extraction failed: {target_res.get('err_msg')}"
-                        )
+                if state == "done":
+                    full_zip_url = target_res.get("full_zip_url", "")
+                    if not full_zip_url:
+                        raise Exception("done state reached but full_zip_url missing")
+                    break
+                if state == "failed":
+                    raise Exception(
+                        f"Mineru batch extraction failed: {target_res.get('err_msg')}"
+                    )
 
                 self._sleep_qt(3000)
 
         if not full_zip_url:
             raise Exception("Missing full_zip_url in Mineru response")
 
-        req_zip = urllib.request.Request(full_zip_url)
-        with self._urlopen(req_zip, timeout=self._timeout_ms // 1000) as resp:
-            zip_data = resp.read()
+        _, zip_data = self._request_bytes(
+            "GET",
+            full_zip_url,
+            headers={"User-Agent": self._http_user_agent},
+            timeout_ms=request_timeout_ms,
+        )
 
         with zipfile.ZipFile(io.BytesIO(zip_data)) as z:
             names = z.namelist()
@@ -718,7 +919,7 @@ class QtWebExtractor:
                 raise Exception("full.md not found in returned Zip file")
 
             with z.open(matched_md) as fmd:
-                md_text = fmd.read().decode("utf-8")
+                md_text = fmd.read().decode("utf-8", errors="replace")
 
         return md_text
 

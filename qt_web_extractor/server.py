@@ -365,6 +365,7 @@ def serve(
     proxy: str | None = None,
     mineru_api_key: str = "",
     mineru_timeout_ms: int = 300000,
+    mineru_base_url: str = "https://mineru.net",
 ):
     """Start the extraction server. Blocks forever (runs Qt event loop)."""
     logging.basicConfig(
@@ -378,6 +379,7 @@ def serve(
         proxy=proxy,
         mineru_api_key=mineru_api_key,
         mineru_timeout_ms=mineru_timeout_ms,
+        mineru_base_url=mineru_base_url,
     )
     app = extractor._app
 

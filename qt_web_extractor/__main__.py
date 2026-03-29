@@ -33,6 +33,7 @@ def _cmd_extract(args):
         proxy=args.proxy,
         mineru_api_key=getattr(args, "mineru_api_key", ""),
         mineru_timeout_ms=getattr(args, "mineru_timeout", 300000),
+        mineru_base_url=getattr(args, "mineru_base_url", "https://mineru.net"),
     )
 
     results = []
@@ -73,6 +74,7 @@ def _cmd_serve(args):
         proxy=args.proxy,
         mineru_api_key=getattr(args, "mineru_api_key", ""),
         mineru_timeout_ms=getattr(args, "mineru_timeout", 300000),
+        mineru_base_url=getattr(args, "mineru_base_url", "https://mineru.net"),
     )
 
 
@@ -108,6 +110,12 @@ def main():
             default=int(os.environ.get("MINERU_TIMEOUT_MS", "300000")),
             help="Timeout for MinerU API in ms",
         )
+        flat.add_argument(
+            "--mineru-base-url",
+            type=str,
+            default=os.environ.get("MINERU_BASE_URL", "https://mineru.net"),
+            help="MinerU API base URL (supports self-hosted MinerU)",
+        )
         _cmd_extract(flat.parse_args())
         return
 
@@ -142,6 +150,12 @@ def main():
         default=int(os.environ.get("MINERU_TIMEOUT_MS", "300000")),
         help="Timeout for MinerU API in ms",
     )
+    p_extract.add_argument(
+        "--mineru-base-url",
+        type=str,
+        default=os.environ.get("MINERU_BASE_URL", "https://mineru.net"),
+        help="MinerU API base URL (supports self-hosted MinerU)",
+    )
 
     p_serve = sub.add_parser("serve", help="Run as HTTP extraction server.")
     p_serve.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
@@ -166,6 +180,12 @@ def main():
         type=int,
         default=int(os.environ.get("MINERU_TIMEOUT_MS", "300000")),
         help="Timeout for MinerU API in ms",
+    )
+    p_serve.add_argument(
+        "--mineru-base-url",
+        type=str,
+        default=os.environ.get("MINERU_BASE_URL", "https://mineru.net"),
+        help="MinerU API base URL (supports self-hosted MinerU)",
     )
     p_serve.add_argument(
         "--proxy",

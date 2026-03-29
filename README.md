@@ -4,7 +4,8 @@
 
 A general-purpose web content extraction engine powered by Qt WebEngine (Chromium). Designed to extract fully-rendered content from modern web pages that rely on JavaScript, cookies, dynamic content loading, or client-side rendering — transforming complex, noisy web structures directly into clean **Markdown** text format, preserving links and readability for LLM processing or downstream pipelines.
 
-Also supports extracting text from PDF documents via Qt PDF.
+Also supports extracting text from PDF documents via Qt PDF, with optional
+MinerU API integration for high-fidelity Markdown extraction.
 
 **Key features:**
 
@@ -13,8 +14,8 @@ Also supports extracting text from PDF documents via Qt PDF.
   any page that requires JS to display content.
 - **Cookie & session support** — access pages behind login walls or consent
   gates.
-- **PDF text extraction** — extract text from PDF documents via Qt PDF with
-  auto-detection.
+- **PDF text extraction** — auto-detect PDF URLs and extract via MinerU (when
+  configured) with automatic fallback to local Qt PDF.
 - **Multiple interfaces** — use as a CLI tool, Python library, or HTTP
   service with a simple REST API.
 - **Headless operation** — runs in Qt offscreen mode, no display or GPU
@@ -109,6 +110,12 @@ python -m qt_web_extractor https://example.com/document.pdf
 
 # force PDF extraction mode
 python -m qt_web_extractor --pdf https://example.com/file
+
+# use MinerU cloud API for high-fidelity PDF extraction
+python -m qt_web_extractor --mineru-api-key "$MINERU_API_KEY" https://example.com/document.pdf
+
+# use self-hosted MinerU deployment
+python -m qt_web_extractor --mineru-api-key "$MINERU_API_KEY" --mineru-base-url http://127.0.0.1:8888 https://example.com/document.pdf
 ```
 
 ### Python API
@@ -130,6 +137,13 @@ print(result.text)
 
 # override proxy explicitly (otherwise standard proxy env vars are used)
 extractor = QtWebExtractor(proxy="http://127.0.0.1:7890")
+
+# enable MinerU integration (falls back to Qt PDF on failure)
+extractor = QtWebExtractor(
+  mineru_api_key="your-api-key",
+  mineru_base_url="https://mineru.net",  # or http://127.0.0.1:8888 for self-hosted
+  mineru_timeout_ms=300000,
+)
 ```
 
 ### Open WebUI integration
@@ -160,7 +174,7 @@ The server exposes an API compatible with Open WebUI's built-in web loader engin
 
 That's it — Open WebUI will now use Qt Web Extractor to load all web pages
 with full JavaScript rendering support. PDF URLs are auto-detected and handled
-via Qt PDF.
+via MinerU (if configured) or Qt PDF fallback.
 
 #### Alternative: custom tool
 
@@ -186,6 +200,9 @@ qt-web-extractor serve --api-key mysecretkey
 
 # override proxy for the service process
 qt-web-extractor serve --proxy http://127.0.0.1:7890
+
+# use self-hosted MinerU in server mode
+qt-web-extractor serve --mineru-api-key "$MINERU_API_KEY" --mineru-base-url http://127.0.0.1:8888
 ```
 
 Proxy handling follows standard environment variables by default:
@@ -314,6 +331,9 @@ sudo systemctl enable --now qt-web-extractor
 | `HTTP_PROXY` | unset | HTTP outbound proxy |
 | `ALL_PROXY` | unset | Fallback outbound proxy |
 | `NO_PROXY` | unset | Hosts that bypass proxy |
+| `MINERU_API_KEY` | `""` | MinerU API key for high-fidelity PDF extraction |
+| `MINERU_TIMEOUT_MS` | `300000` | MinerU extraction timeout (ms) |
+| `MINERU_BASE_URL` | `https://mineru.net` | MinerU API base URL (supports self-hosted deployments) |
 
 ## How it works
 
