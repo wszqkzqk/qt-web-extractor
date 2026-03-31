@@ -133,11 +133,64 @@ class _WebPage(QWebEnginePage):
             return
         self._result.title = self.title()
         self._result.url = self.url().toString()
-        self.toHtml(self._on_html_ready)
+        
         if timed_out:
             self._result.error = "Timed out (partial content may be available)"
         elif not self._load_ok:
             self._result.error = "Page load reported failure (content may be incomplete)"
+
+        # Inject JS to serialize the Composed Tree (Shadow DOM + Slots) safely and efficiently
+        js = """(function() {
+            const VOID = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
+            const SKIP = new Set(['script','style','svg','noscript','template']);
+            
+            function escapeHTML(str) {
+                return (str || '')
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#039;');
+            }
+
+            function walk(node) {
+                if (node.nodeType === Node.TEXT_NODE) return escapeHTML(node.nodeValue);
+                if (node.nodeType !== Node.ELEMENT_NODE) return '';
+                
+                let t = node.tagName.toLowerCase();
+                if (SKIP.has(t)) return '';
+                
+                // Use fast native visibility check; fallback to true if very old Chromium
+                if (node.checkVisibility && !node.checkVisibility()) return '';
+                
+                if (t === 'slot') return [...node.assignedNodes({flatten:true})].map(walk).join('');
+                
+                // Map web component tags (containing '-') to <div> for QTextDocument compatibility
+                let outTag = t.includes('-') ? 'div' : t;
+                let h = '<' + outTag;
+                
+                for (let a of node.attributes) {
+                    h += ' ' + a.name + '="' + escapeHTML(a.value) + '"';
+                }
+                
+                if (VOID.has(outTag)) {
+                    h += '>';
+                } else {
+                    h += '>' + [...(node.shadowRoot || node).childNodes].map(walk).join('') + '</' + outTag + '>';
+                }
+                return h;
+            }
+            return '<html><body>' + walk(document.body) + '</body></html>';
+        })();"""
+        self.runJavaScript(js, 0, self._on_flattened_html_ready)
+
+    def _on_flattened_html_ready(self, shadow_html: str):
+        if self._settled:
+            return
+        if not shadow_html or not shadow_html.strip():
+            self.toHtml(self._on_html_ready)
+            return
+        self._on_html_ready(shadow_html)
 
     def _on_html_ready(self, html: str):
         if self._settled:
