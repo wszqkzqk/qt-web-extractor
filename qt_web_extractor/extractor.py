@@ -139,23 +139,48 @@ class _WebPage(QWebEnginePage):
         elif not self._load_ok:
             self._result.error = "Page load reported failure (content may be incomplete)"
 
-        # Inject JS to serialize the Composed Tree (Shadow DOM + Slots) so Web Components are visible
+        # Inject JS to serialize the Composed Tree (Shadow DOM + Slots) safely and efficiently
         js = """(function() {
             const VOID = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
+            const SKIP = new Set(['script','style','svg','noscript','template']);
+            
+            function escapeHTML(str) {
+                return (str || '')
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#039;');
+            }
+
             function walk(node) {
-                if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+                if (node.nodeType === Node.TEXT_NODE) return escapeHTML(node.nodeValue);
                 if (node.nodeType !== Node.ELEMENT_NODE) return '';
+                
                 let t = node.tagName.toLowerCase();
-                if (t === 'script' || t === 'style' || t === 'svg' || t === 'noscript') return '';
-                let s = window.getComputedStyle(node);
-                if (s.display === 'none' || s.visibility === 'hidden') return '';
+                if (SKIP.has(t)) return '';
+                
+                // Use fast native visibility check; fallback to true if very old Chromium
+                if (node.checkVisibility && !node.checkVisibility()) return '';
+                
                 if (t === 'slot') return [...node.assignedNodes({flatten:true})].map(walk).join('');
-                let h = '<' + t;
-                for (let a of node.attributes) h += ' ' + a.name + '="' + a.value.replace(/"/g,'&quot;') + '"';
-                h += VOID.has(t) ? '>' : '>' + [...(node.shadowRoot || node).childNodes].map(walk).join('') + '</' + t + '>';
+                
+                // Map web component tags (containing '-') to <div> for QTextDocument compatibility
+                let outTag = t.includes('-') ? 'div' : t;
+                let h = '<' + outTag;
+                
+                for (let a of node.attributes) {
+                    h += ' ' + a.name + '="' + escapeHTML(a.value) + '"';
+                }
+                
+                if (VOID.has(outTag)) {
+                    h += '>';
+                } else {
+                    h += '>' + [...(node.shadowRoot || node).childNodes].map(walk).join('') + '</' + outTag + '>';
+                }
                 return h;
             }
-            return '<html>' + (document.head?.outerHTML || '') + walk(document.body) + '</html>';
+            return '<html><body>' + walk(document.body) + '</body></html>';
         })();"""
         self.runJavaScript(js, 0, self._on_flattened_html_ready)
 
