@@ -133,11 +133,39 @@ class _WebPage(QWebEnginePage):
             return
         self._result.title = self.title()
         self._result.url = self.url().toString()
-        self.toHtml(self._on_html_ready)
+        
         if timed_out:
             self._result.error = "Timed out (partial content may be available)"
         elif not self._load_ok:
             self._result.error = "Page load reported failure (content may be incomplete)"
+
+        # Inject JS to serialize the Composed Tree (Shadow DOM + Slots) so Web Components are visible
+        js = """(function() {
+            const VOID = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
+            function walk(node) {
+                if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+                if (node.nodeType !== Node.ELEMENT_NODE) return '';
+                let t = node.tagName.toLowerCase();
+                if (t === 'script' || t === 'style' || t === 'svg' || t === 'noscript') return '';
+                let s = window.getComputedStyle(node);
+                if (s.display === 'none' || s.visibility === 'hidden') return '';
+                if (t === 'slot') return [...node.assignedNodes({flatten:true})].map(walk).join('');
+                let h = '<' + t;
+                for (let a of node.attributes) h += ' ' + a.name + '="' + a.value.replace(/"/g,'&quot;') + '"';
+                h += VOID.has(t) ? '>' : '>' + [...(node.shadowRoot || node).childNodes].map(walk).join('') + '</' + t + '>';
+                return h;
+            }
+            return '<html>' + (document.head?.outerHTML || '') + walk(document.body) + '</html>';
+        })();"""
+        self.runJavaScript(js, 0, self._on_flattened_html_ready)
+
+    def _on_flattened_html_ready(self, shadow_html: str):
+        if self._settled:
+            return
+        if not shadow_html or not shadow_html.strip():
+            self.toHtml(self._on_html_ready)
+            return
+        self._on_html_ready(shadow_html)
 
     def _on_html_ready(self, html: str):
         if self._settled:
