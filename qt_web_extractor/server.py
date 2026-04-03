@@ -31,6 +31,9 @@ from qt_web_extractor.extractor import QtWebExtractor, _ExtractionResult
 
 log = logging.getLogger("qt-web-extractor")
 
+_MCP_PROTOCOL_VERSION = "2024-11-05"
+_MCP_MAX_RESULT_CHARS = 500000
+
 
 class _ExtractRequest:
     __slots__ = ("url", "pdf", "result", "done")
@@ -68,6 +71,20 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_empty(self, status: int = 204):
+        self.send_response(status)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _send_mcp_result(self, request_id, result):
+        self._send_json({"jsonrpc": "2.0", "id": request_id, "result": result})
+
+    def _send_mcp_error(self, request_id, code: int, message: str, data=None):
+        error = {"code": code, "message": message}
+        if data is not None:
+            error["data"] = data
+        self._send_json({"jsonrpc": "2.0", "id": request_id, "error": error})
+
     def do_GET(self):
         if self.path == "/health":
             self._send_json({"status": "ok"})
@@ -98,8 +115,171 @@ class _Handler(BaseHTTPRequestHandler):
             return None
         return req.result
 
+    @staticmethod
+    def _mcp_tools() -> list[dict]:
+        return [
+            {
+                "name": "extract_url",
+                "description": (
+                    "Extract rendered web content as Markdown from a URL. "
+                    "Handles JavaScript pages and auto-detects PDF URLs."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "The URL to extract content from.",
+                        }
+                    },
+                    "required": ["url"],
+                    "additionalProperties": False,
+                },
+                "_meta": {
+                    "anthropic/maxResultSizeChars": _MCP_MAX_RESULT_CHARS,
+                },
+            }
+        ]
+
+    def _mcp_call_extract_url(self, params: dict) -> dict:
+        name = params.get("name")
+        if name != "extract_url":
+            raise ValueError("unknown tool name")
+
+        arguments = params.get("arguments", {})
+        if not isinstance(arguments, dict):
+            raise ValueError("arguments must be an object")
+
+        url = arguments.get("url")
+        if not isinstance(url, str):
+            raise ValueError("arguments.url must be a string")
+
+        url = url.strip()
+        if not url:
+            raise ValueError("arguments.url is required")
+
+        pdf = self._is_pdf(url, self.extractor)
+        log.info("MCP extract_url: %s (pdf=%s)", url, pdf)
+        result = self._extract_one(url, pdf=pdf)
+
+        if result is None:
+            timeout_error = "extraction timed out"
+            return {
+                "content": [{"type": "text", "text": f"Error: {timeout_error}"}],
+                "structuredContent": {
+                    "url": url,
+                    "title": "",
+                    "markdown": "",
+                    "error": timeout_error,
+                },
+                "isError": True,
+            }
+
+        markdown = result.text or ""
+        response = {
+            "url": result.url or url,
+            "title": result.title,
+            "markdown": markdown,
+            "error": result.error,
+        }
+
+        if result.error and not markdown:
+            return {
+                "content": [{"type": "text", "text": f"Error: {result.error}"}],
+                "structuredContent": response,
+                "isError": True,
+            }
+
+        text = markdown
+        if result.error:
+            text = f"{markdown}\n\n[warning] {result.error}" if markdown else f"[warning] {result.error}"
+
+        return {
+            "content": [{"type": "text", "text": text}],
+            "structuredContent": response,
+            "isError": False,
+        }
+
+    def _handle_mcp(self):
+        length = int(self.headers.get("Content-Length", 0))
+        if length == 0:
+            self._send_mcp_error(None, -32600, "Invalid Request", {"reason": "empty body"})
+            return
+
+        try:
+            body = json.loads(self.rfile.read(length))
+        except json.JSONDecodeError:
+            self._send_mcp_error(None, -32700, "Parse error")
+            return
+
+        if not isinstance(body, dict):
+            self._send_mcp_error(None, -32600, "Invalid Request")
+            return
+
+        has_id = "id" in body
+        request_id = body.get("id")
+        method = body.get("method")
+        params = body.get("params", {})
+
+        if body.get("jsonrpc") != "2.0" or not isinstance(method, str) or not method:
+            self._send_mcp_error(request_id if has_id else None, -32600, "Invalid Request")
+            return
+
+        if not isinstance(params, dict):
+            if has_id:
+                self._send_mcp_error(request_id, -32602, "Invalid params", {"reason": "params must be an object"})
+            else:
+                self._send_empty()
+            return
+
+        # Ignore JSON-RPC notifications unless explicitly needed.
+        if not has_id:
+            self._send_empty()
+            return
+
+        if method == "initialize":
+            self._send_mcp_result(
+                request_id,
+                {
+                    "protocolVersion": _MCP_PROTOCOL_VERSION,
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {
+                        "name": "qt-web-extractor",
+                        "version": "0.1.0",
+                    },
+                },
+            )
+            return
+
+        if method == "ping":
+            self._send_mcp_result(request_id, {})
+            return
+
+        if method == "notifications/initialized":
+            self._send_mcp_result(request_id, {})
+            return
+
+        if method == "tools/list":
+            self._send_mcp_result(request_id, {"tools": self._mcp_tools()})
+            return
+
+        if method == "tools/call":
+            try:
+                result = self._mcp_call_extract_url(params)
+            except ValueError as e:
+                self._send_mcp_error(request_id, -32602, "Invalid params", {"reason": str(e)})
+                return
+            self._send_mcp_result(request_id, result)
+            return
+
+        self._send_mcp_error(request_id, -32601, "Method not found")
+
     def do_POST(self):
         if not self._check_auth():
+            return
+
+        if self.path in ("/mcp", "/mcp/"):
+            self._handle_mcp()
             return
 
         body = self._read_json_body()
