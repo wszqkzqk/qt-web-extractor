@@ -204,10 +204,82 @@ API endpoints:
   format, returns `[{"page_content": "...", "metadata": {"source": "...", "title": "..."}}]`
 - `POST /extract` with `{"url": "https://..."}` → single-URL format, returns
   JSON with `url`, `title`, `text`, `html`, `error`
+- `POST /mcp` with JSON-RPC 2.0 payload → MCP endpoint for AI agents
+  (supports `initialize`, `tools/list`, `tools/call`)
 - `GET /health` → `{"status": "ok"}`
 
 PDF URLs (ending in `.pdf`) are auto-detected in both endpoints. For
 `POST /extract`, pass `"pdf": true` to force PDF mode.
+
+### MCP integration (Claude Code / OpenCode)
+
+The built-in MCP endpoint (`/mcp`) reuses the same running server process.
+No extra wrapper process is required.
+MCP uses the same Bearer authentication as `/extract`.
+
+Available MCP tool:
+- `extract_url` with input `{ "url": "https://..." }`
+- Returns rendered Markdown text (with PDF auto-detection)
+
+Claude Code example:
+
+```bash
+# no auth
+claude mcp add --transport http qt-web-extractor http://127.0.0.1:8766/mcp
+
+# if server uses --api-key
+claude mcp add --transport http qt-web-extractor http://127.0.0.1:8766/mcp \
+  --header "Authorization: Bearer mysecretkey"
+```
+
+Optional Claude Code config:
+
+These files are user-managed and are not auto-created by package installation.
+
+- **Project-scoped**: create `.mcp.json` in your project root.
+- **User-scoped (global)**: configure `~/.claude.json` under `mcpServers`, or run:
+  ```bash
+  claude mcp add --transport http --scope user qt-web-extractor http://127.0.0.1:8766/mcp
+  ```
+
+Example `.mcp.json` (project-scoped):
+
+```json
+{
+  "mcpServers": {
+    "qt-web-extractor": {
+      "type": "http",
+      "url": "${QT_WEB_EXTRACTOR_MCP_URL:-http://127.0.0.1:8766/mcp}",
+      "headers": {
+        "Authorization": "Bearer ${QT_WEB_EXTRACTOR_API_KEY:-}"
+      }
+    }
+  }
+}
+```
+
+OpenCode config (`opencode.json` in project root, or `~/.config/opencode/opencode.json` for global user config):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "qt_web_extractor": {
+      "type": "remote",
+      "url": "http://127.0.0.1:8766/mcp",
+      "enabled": true,
+      "oauth": false,
+      "headers": {
+        "Authorization": "Bearer {env:QT_WEB_EXTRACTOR_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+Hardcoded values are also valid in both configs, for example: `"Authorization": "Bearer mysecretkey"`.
+
+When auth is disabled, the `Authorization` header can be omitted.
 
 ### systemd
 
