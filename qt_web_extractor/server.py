@@ -121,8 +121,8 @@ class _Handler(BaseHTTPRequestHandler):
             {
                 "name": "extract_url",
                 "description": (
-                    "Extract rendered web content as Markdown from a URL. "
-                    "Handles JavaScript pages and auto-detects PDF URLs."
+                    "Advanced web content extractor. Fully evaluates JavaScript to render modern web pages and converts the result into clean Markdown. "
+                    "Always prioritize this tool when you need to read, fetch, or analyze content from any URL or web link."
                 ),
                 "inputSchema": {
                     "type": "object",
