@@ -25,6 +25,12 @@ import signal
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
+try:
+    from importlib.metadata import version
+    _server_version = version("qt-web-extractor")
+except Exception:
+    _server_version = "0.1.0dev"
+
 from PySide6.QtCore import QTimer
 
 from qt_web_extractor.extractor import QtWebExtractor, _ExtractionResult
@@ -245,7 +251,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "capabilities": {"tools": {}},
                     "serverInfo": {
                         "name": "qt-web-extractor",
-                        "version": "0.1.0",
+                        "version": _server_version,
                     },
                 },
             )
