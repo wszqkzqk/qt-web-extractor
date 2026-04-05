@@ -218,17 +218,17 @@ No extra wrapper process is required.
 MCP uses the same Bearer authentication as `/extract`.
 
 Available MCP tool:
-- `extract_url` with input `{ "url": "https://..." }`
+- `fetch_url` with input `{ "url": "https://..." }`
 - Returns rendered Markdown text (with PDF auto-detection)
 
 Claude Code example:
 
 ```bash
 # no auth
-claude mcp add --transport http qt-web-extractor http://127.0.0.1:8766/mcp
+claude mcp add --transport http web-extractor http://127.0.0.1:8766/mcp
 
 # if server uses --api-key
-claude mcp add --transport http qt-web-extractor http://127.0.0.1:8766/mcp \
+claude mcp add --transport http web-extractor http://127.0.0.1:8766/mcp \
   --header "Authorization: Bearer mysecretkey"
 ```
 
@@ -239,7 +239,7 @@ These files are user-managed and are not auto-created by package installation.
 - **Project-scoped**: create `.mcp.json` in your project root.
 - **User-scoped (global)**: configure `~/.claude.json` under `mcpServers`, or run:
   ```bash
-  claude mcp add --transport http --scope user qt-web-extractor http://127.0.0.1:8766/mcp
+  claude mcp add --transport http --scope user web-extractor http://127.0.0.1:8766/mcp
   ```
 
 Example `.mcp.json` (project-scoped):
@@ -247,7 +247,7 @@ Example `.mcp.json` (project-scoped):
 ```json
 {
   "mcpServers": {
-    "qt-web-extractor": {
+    "web-extractor": {
       "type": "http",
       "url": "${QT_WEB_EXTRACTOR_MCP_URL:-http://127.0.0.1:8766/mcp}",
       "headers": {
@@ -264,7 +264,7 @@ OpenCode config (`opencode.json` in project root, or `~/.config/opencode/opencod
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "qt_web_extractor": {
+    "web_extractor": {
       "type": "remote",
       "url": "http://127.0.0.1:8766/mcp",
       "enabled": true,

@@ -125,7 +125,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _mcp_tools() -> list[dict]:
         return [
             {
-                "name": "extract_url",
+                "name": "fetch_url",
                 "description": (
                     "Advanced web content extractor. Fully evaluates JavaScript to render modern web pages and converts the result into clean Markdown. "
                     "Always prioritize this tool when you need to read, fetch, or analyze content from any URL or web link."
@@ -147,9 +147,9 @@ class _Handler(BaseHTTPRequestHandler):
             }
         ]
 
-    def _mcp_call_extract_url(self, params: dict) -> dict:
+    def _mcp_call_fetch_url(self, params: dict) -> dict:
         name = params.get("name")
-        if name != "extract_url":
+        if name != "fetch_url":
             raise ValueError("unknown tool name")
 
         arguments = params.get("arguments", {})
@@ -165,7 +165,7 @@ class _Handler(BaseHTTPRequestHandler):
             raise ValueError("arguments.url is required")
 
         pdf = self._is_pdf(url, self.extractor)
-        log.info("MCP extract_url: %s (pdf=%s)", url, pdf)
+        log.info("MCP fetch_url: %s (pdf=%s)", url, pdf)
         result = self._extract_one(url, pdf=pdf)
 
         if result is None:
@@ -271,7 +271,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         if method == "tools/call":
             try:
-                result = self._mcp_call_extract_url(params)
+                result = self._mcp_call_fetch_url(params)
             except ValueError as e:
                 self._send_mcp_error(request_id, -32602, "Invalid params", {"reason": str(e)})
                 return
