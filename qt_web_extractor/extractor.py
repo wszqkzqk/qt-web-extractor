@@ -206,12 +206,63 @@ class _WebPage(QWebEnginePage):
     _RE_STYLE = re.compile(r"<style[\s>].*?</style>", re.DOTALL | re.IGNORECASE)
     _RE_BODY = re.compile(r"<body[^>]*>(.*?)</body>", re.DOTALL | re.IGNORECASE)
     _RE_CONTENT_START = re.compile(r"<(main|article|h1|h2|section|p)\b", re.IGNORECASE)
+    _RE_MD_IMAGE_LINK = re.compile(
+        r"^\s*\\?\[\s*!\[(?P<alt>[^\]]*)\]\((?P<img>[^)]+)\)\s*\]\((?P<link>[^)]+)\)\s*$"
+    )
+    _RE_MD_OPEN_BRACKET = re.compile(r"^\s*\\?\[\s*$")
+    _RE_MD_IMAGE_ONLY = re.compile(r"^\s*!\[(?P<alt>[^\]]*)\]\((?P<img>[^)]+)\)\s*$")
+    _RE_MD_LINK_SUFFIX = re.compile(r"^\s*\]\((?P<link>[^)]+)\)\s*$")
 
     @staticmethod
     def _qt_html_to_markdown(raw: str) -> str:
         doc = QTextDocument()
         doc.setHtml(raw)
-        return doc.toMarkdown().strip()
+        md = doc.toMarkdown().strip()
+        return _WebPage._cleanup_markdown(md)
+
+    @staticmethod
+    def _cleanup_markdown(md: str) -> str:
+        """Normalize Qt-specific malformed markdown while preserving link semantics."""
+        if not md:
+            return md
+
+        lines = md.split("\n")
+        result: list[str] = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+
+            single_line = _WebPage._RE_MD_IMAGE_LINK.match(line)
+            if single_line:
+                alt_text = single_line.group("alt")
+                image_url = single_line.group("img").strip()
+                link_url = single_line.group("link").strip()
+                if image_url == link_url:
+                    result.append(f"![{alt_text}]({image_url})")
+                else:
+                    result.append(f"[![{alt_text}]({image_url})]({link_url})")
+                i += 1
+                continue
+
+            if i + 2 < len(lines):
+                open_bracket = _WebPage._RE_MD_OPEN_BRACKET.match(line)
+                image_line = _WebPage._RE_MD_IMAGE_ONLY.match(lines[i + 1])
+                link_suffix = _WebPage._RE_MD_LINK_SUFFIX.match(lines[i + 2])
+                if open_bracket and image_line and link_suffix:
+                    alt_text = image_line.group("alt")
+                    image_url = image_line.group("img").strip()
+                    link_url = link_suffix.group("link").strip()
+                    if image_url == link_url:
+                        result.append(f"![{alt_text}]({image_url})")
+                    else:
+                        result.append(f"[![{alt_text}]({image_url})]({link_url})")
+                    i += 3
+                    continue
+
+            result.append(line)
+            i += 1
+
+        return "\n".join(result)
 
     @classmethod
     def _text_from_html(cls, raw: str) -> str:
