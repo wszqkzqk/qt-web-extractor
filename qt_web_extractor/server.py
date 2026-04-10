@@ -128,7 +128,8 @@ class _Handler(BaseHTTPRequestHandler):
                 "name": "fetch_url",
                 "description": (
                     "Advanced web content extractor. Fully evaluates JavaScript to render modern web pages and converts the result into clean Markdown. "
-                    "Always prioritize this tool when you need to read, fetch, or analyze content from any URL or web link."
+                    "Always prioritize this tool when you need to read, fetch, or analyze content from any URL or web link. "
+                    "If content rendering appears to have hidden, garbled, or otherwise corrupted the page content, try another fetch method instead."
                 ),
                 "inputSchema": {
                     "type": "object",
