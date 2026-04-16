@@ -160,9 +160,6 @@ class _WebPage(QWebEnginePage):
                 let t = node.tagName.toLowerCase();
                 if (SKIP.has(t)) return '';
                 
-                // Use fast native visibility check; fallback to true if very old Chromium
-                if (node.checkVisibility && !node.checkVisibility()) return '';
-                
                 if (t === 'slot') return [...node.assignedNodes({flatten:true})].map(walk).join('');
                 
                 // Map web component tags (containing '-') to <div> for QTextDocument compatibility
