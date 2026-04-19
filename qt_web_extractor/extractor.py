@@ -97,6 +97,7 @@ class _WebPage(QWebEnginePage):
         self._load_ok = False
 
         self.loadFinished.connect(self._on_load_finished)
+        self.loadStarted.connect(self._on_load_started)
 
         # post-load JS settle delay
         self._stability_timer = QTimer(self)
@@ -113,6 +114,9 @@ class _WebPage(QWebEnginePage):
         self._result.url = url
         self._timeout_timer.start()
         self.load(QUrl(url))
+
+    def _on_load_started(self):
+        self._stability_timer.stop()
 
     def _on_load_finished(self, ok: bool):
         if self._settled:
@@ -133,7 +137,7 @@ class _WebPage(QWebEnginePage):
             return
         self._result.title = self.title()
         self._result.url = self.url().toString()
-        
+
         if timed_out:
             self._result.error = "Timed out (partial content may be available)"
         elif not self._load_ok:
