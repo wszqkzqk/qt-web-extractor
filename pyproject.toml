@@ -13,6 +13,7 @@ authors = [
     { name = "wszqkzqk" },
 ]
 dependencies = [
+    "markdownify>=0.13.1",
     "PySide6-Essentials>=6.5",
 ]
 

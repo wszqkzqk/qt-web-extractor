@@ -23,6 +23,7 @@ import sys
 import json
 import atexit
 import html as html_lib
+import importlib
 import logging
 import re
 import ssl
@@ -31,7 +32,6 @@ import urllib.request
 from dataclasses import dataclass
 import shiboken6
 from PySide6.QtCore import QUrl, QTimer, QEventLoop, Signal, QByteArray, QBuffer, QIODevice
-from PySide6.QtGui import QTextDocument
 from PySide6.QtWidgets import QApplication
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtWebEngineCore import (
@@ -49,6 +49,14 @@ os.environ.setdefault(
 )
 
 log = logging.getLogger("qt-web-extractor")
+
+
+def _load_markdownify():
+    try:
+        module = importlib.import_module("markdownify")
+    except Exception:
+        return None
+    return getattr(module, "markdownify", None)
 
 
 @dataclass(frozen=True)
@@ -191,6 +199,9 @@ class _WebPage(QWebEnginePage):
         if not shadow_html or not shadow_html.strip():
             self.toHtml(self._on_html_ready)
             return
+        # Anubis challenge page self-redirects after PoW; skip and wait.
+        if 'id="anubis_challenge"' in shadow_html or self.title() == "Making sure you're not a bot!":
+            return
         self._on_html_ready(shadow_html)
 
     def _on_html_ready(self, html: str):
@@ -206,41 +217,47 @@ class _WebPage(QWebEnginePage):
     _RE_SCRIPT = re.compile(r"<script[\s>].*?</script>", re.DOTALL | re.IGNORECASE)
     _RE_STYLE = re.compile(r"<style[\s>].*?</style>", re.DOTALL | re.IGNORECASE)
     _RE_BODY = re.compile(r"<body[^>]*>(.*?)</body>", re.DOTALL | re.IGNORECASE)
-    _RE_CONTENT_START = re.compile(r"<(main|article|h1|h2|section|p)\b", re.IGNORECASE)
+    _RE_MD_BLANKS = re.compile(r"\n{3,}")
+    _RE_TAGS = re.compile(r"<[^>]+>")
 
     @staticmethod
-    def _qt_html_to_markdown(raw: str) -> str:
-        doc = QTextDocument()
-        doc.setHtml(raw)
-        return doc.toMarkdown().strip()
+    def _html_to_markdown(raw: str) -> str:
+        markdownify = _load_markdownify()
+        if markdownify is None:
+            return ""
+
+        md = markdownify(
+            raw,
+            heading_style="ATX",
+            bullets="-",
+            strip=["script", "style", "noscript", "template", "svg"],
+        )
+        md = _WebPage._RE_MD_BLANKS.sub("\n\n", md)
+        return md.strip()
+
+    @staticmethod
+    def _html_to_plain_text(raw: str) -> str:
+        text = _WebPage._RE_TAGS.sub(" ", raw)
+        text = html_lib.unescape(text)
+        text = re.sub(r"[ \t\r\f\v]+", " ", text)
+        text = _WebPage._RE_MD_BLANKS.sub("\n\n", text)
+        return text.strip()
 
     @classmethod
     def _text_from_html(cls, raw: str) -> str:
-        """Best-effort text extraction from raw HTML, preserving links as Markdown.
-
-        Strip script/style first, then reduce leading layout noise when needed.
-        """
+        """Convert rendered HTML into Markdown with a lightweight converter."""
         text = cls._RE_SCRIPT.sub("", raw)
         text = cls._RE_STYLE.sub("", text)
 
-        md = cls._qt_html_to_markdown(text)
-        if md:
-            return md
-
         body_match = cls._RE_BODY.search(text)
         body = body_match.group(1) if body_match is not None else text
-        start_match = cls._RE_CONTENT_START.search(body)
-        if start_match is not None and start_match.start() > 0:
-            body = body[start_match.start():]
 
         narrowed = f"<html><body>{body}</body></html>"
-        md = cls._qt_html_to_markdown(narrowed)
+        md = cls._html_to_markdown(narrowed)
         if md:
             return md
 
-        doc = QTextDocument()
-        doc.setHtml(narrowed)
-        return doc.toPlainText().strip()
+        return cls._html_to_plain_text(narrowed)
 
     def _finish(self):
         self._settled = True
