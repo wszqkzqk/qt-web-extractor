@@ -207,6 +207,25 @@ class _WebPage(QWebEnginePage):
     _RE_STYLE = re.compile(r"<style[\s>].*?</style>", re.DOTALL | re.IGNORECASE)
     _RE_BODY = re.compile(r"<body[^>]*>(.*?)</body>", re.DOTALL | re.IGNORECASE)
     _RE_CONTENT_START = re.compile(r"<(main|article|h1|h2|section|p)\b", re.IGNORECASE)
+    # Replace <img> tags with data URI src by their alt text (or nothing).
+    _RE_DATA_URI_IMG = re.compile(
+        r'<img\b[^>]*\bsrc=["\']data:[^"\']*["\'][^>]*>',
+        re.IGNORECASE | re.DOTALL,
+    )
+    # Strip data URI attributes from other tags (source srcset, video poster, etc.).
+    _RE_DATA_URI_ATTR = re.compile(
+        r'\s+(?:srcset|poster|data-[-a-zA-Z0-9]*)=["\']data:[^"\']*["\']',
+        re.IGNORECASE,
+    )
+    _RE_DATA_URI_CSS = re.compile(
+        r'background-image\s*:\s*url\(["\']?data:[^"\')]+["\']?\)',
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _replace_data_img(match: re.Match) -> str:
+        m = re.search(r'(?:^|\s)alt="([^"]*)"|(?:^|\s)alt=\'([^\']*)\'', match.group(0), re.IGNORECASE)
+        return (m.group(1) or m.group(2)) if m else ""
 
     @staticmethod
     def _qt_html_to_markdown(raw: str) -> str:
@@ -216,12 +235,12 @@ class _WebPage(QWebEnginePage):
 
     @classmethod
     def _text_from_html(cls, raw: str) -> str:
-        """Best-effort text extraction from raw HTML, preserving links as Markdown.
-
-        Strip script/style first, then reduce leading layout noise when needed.
-        """
+        """Best-effort text extraction from raw HTML, preserving links as Markdown."""
         text = cls._RE_SCRIPT.sub("", raw)
         text = cls._RE_STYLE.sub("", text)
+        text = cls._RE_DATA_URI_IMG.sub(cls._replace_data_img, text)
+        text = cls._RE_DATA_URI_ATTR.sub("", text)
+        text = cls._RE_DATA_URI_CSS.sub("", text)
 
         md = cls._qt_html_to_markdown(text)
         if md:
