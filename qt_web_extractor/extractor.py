@@ -146,7 +146,7 @@ class _WebPage(QWebEnginePage):
         # Inject JS to serialize the Composed Tree (Shadow DOM + Slots) safely and efficiently
         js = """(function() {
             const VOID = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
-            const SKIP = new Set(['script','style','svg','noscript','template']);
+            const SKIP = new Set(['script','style','svg','noscript','template','meta','link','base','title']);
             
             function escapeHTML(str) {
                 return (str || '')
@@ -181,7 +181,7 @@ class _WebPage(QWebEnginePage):
                 }
                 return h;
             }
-            return '<html><body>' + walk(document.body) + '</body></html>';
+            return walk(document.documentElement);
         })();"""
         self.runJavaScript(js, 0, self._on_flattened_html_ready)
 
