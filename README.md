@@ -63,7 +63,7 @@ yay -S qt-web-extractor
 You need Qt6 WebEngine (which includes Qt6 PDF). On Arch:
 
 ```
-sudo pacman -S qt6-webengine pyside6
+sudo pacman -S qt6-webengine pyside6 python-markdownify
 ```
 
 ### Install the package
