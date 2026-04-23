@@ -279,17 +279,44 @@ class QtWebExtractor:
         "ERR_SSL_",
         "ERR_HTTP2_",
     )
+    _UA_MODE_VALUES = {"off", "on_block", "rotate"}
+    _DEFAULT_MOBILE_USER_AGENTS = (
+        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+        "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 "
+        "(KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+        "Mozilla/5.0 (Linux; Android 13; SM-S9180) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) SamsungBrowser/24.0 Chrome/120.0.0.0 Mobile Safari/537.36",
+    )
+    _WECHAT_HOST = "mp.weixin.qq.com"
+    _WECHAT_CAPTCHA_PATH = "/mp/wappoc_appmsgcaptcha"
+    _WECHAT_CAPTCHA_MARKERS = ("环境异常", "完成验证后即可继续访问", "去验证")
+    _GENERIC_CHALLENGE_URL_MARKERS = ("wappoc_appmsgcaptcha", "/captcha", "/challenge", "cf_chl_")
+    _GENERIC_CHALLENGE_TEXT_MARKERS = (
+        "verify you are human",
+        "security check",
+        "access denied",
+        "complete verification",
+        "enable javascript and cookies to continue",
+        "robot check",
+    )
 
     def __init__(
         self,
         timeout_ms: int = 30000,
         user_agent: str | None = None,
+        ua_mode: str = "on_block",
+        user_agents: list[str] | tuple[str, ...] | None = None,
         persist_cookies: bool = False,
         storage_path: str | None = None,
         proxy: str | None = None,
     ):
         self._timeout_ms = timeout_ms
         self._user_agent = user_agent
+        self._ua_mode = self._normalize_ua_mode(ua_mode)
+        self._custom_user_agents = self._normalize_user_agent_list(user_agents)
         self._persist_cookies = persist_cookies
         self._storage_path = storage_path
         self._proxy_config = self._resolve_proxy_config(proxy)
@@ -361,6 +388,28 @@ class QtWebExtractor:
             proxies=proxies,
             no_proxy=cls._parse_no_proxy(env_proxies.get("no")),
         )
+
+    @classmethod
+    def _normalize_ua_mode(cls, value: str | None) -> str:
+        mode = (value or "on_block").strip().lower()
+        if mode not in cls._UA_MODE_VALUES:
+            allowed = ", ".join(sorted(cls._UA_MODE_VALUES))
+            raise ValueError(f"Invalid ua_mode '{value}'. Expected one of: {allowed}")
+        return mode
+
+    @staticmethod
+    def _normalize_user_agent_list(values: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+        if not values:
+            return ()
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            ua = value.strip()
+            if not ua or ua in seen:
+                continue
+            seen.add(ua)
+            normalized.append(ua)
+        return tuple(normalized)
 
     @staticmethod
     def _format_chromium_proxy_server(proxies: dict[str, str]) -> str:
@@ -501,12 +550,63 @@ class QtWebExtractor:
             return False
         return any(marker in result.html for marker in cls._NETERROR_MARKERS)
 
-    def _extract_via_http_fallback(self, url: str) -> tuple[_ExtractionResult | None, str | None]:
+    @classmethod
+    def _is_wechat_url(cls, url: str) -> bool:
+        host = (urllib.parse.urlsplit(url).hostname or "").lower()
+        return host == cls._WECHAT_HOST or host.endswith(f".{cls._WECHAT_HOST}")
+
+    @classmethod
+    def _looks_like_wechat_captcha(cls, result: _ExtractionResult) -> bool:
+        current_url = result.url or ""
+        if cls._WECHAT_CAPTCHA_PATH in current_url:
+            return True
+        text = result.text or ""
+        return all(marker in text for marker in cls._WECHAT_CAPTCHA_MARKERS)
+
+    @classmethod
+    def _looks_like_generic_challenge(cls, result: _ExtractionResult) -> bool:
+        current_url = (result.url or "").lower()
+        text = (result.text or "").lower()
+        html = (result.html or "").lower()
+
+        if any(marker in current_url for marker in cls._GENERIC_CHALLENGE_URL_MARKERS):
+            return True
+
+        # Keep text-only detection conservative to avoid false positives on normal pages.
+        if len(text) > 1000:
+            return False
+        return any(marker in text or marker in html for marker in cls._GENERIC_CHALLENGE_TEXT_MARKERS)
+
+    def _looks_blocked(self, requested_url: str, result: _ExtractionResult) -> bool:
+        if self._is_wechat_url(requested_url) and self._looks_like_wechat_captcha(result):
+            return True
+        return self._looks_like_generic_challenge(result)
+
+    def _default_accept_language(self, url: str) -> str:
+        if self._is_wechat_url(url):
+            return "zh-CN,zh;q=0.9,en;q=0.8"
+        return "en-US,en;q=0.9"
+
+    def _candidate_user_agents(self, current_ua: str) -> list[str]:
+        source = self._custom_user_agents or self._DEFAULT_MOBILE_USER_AGENTS
+        candidates: list[str] = []
+        for ua in source:
+            if ua and ua != current_ua and ua not in candidates:
+                candidates.append(ua)
+        return candidates
+
+    def _extract_via_http_fallback(
+        self,
+        url: str,
+        *,
+        user_agent: str | None = None,
+        accept_language: str | None = None,
+    ) -> tuple[_ExtractionResult | None, str | None]:
         try:
             req = urllib.request.Request(url)
-            req.add_header("User-Agent", self._http_user_agent)
+            req.add_header("User-Agent", user_agent or self._http_user_agent)
             req.add_header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-            req.add_header("Accept-Language", "en-US,en;q=0.9")
+            req.add_header("Accept-Language", accept_language or self._default_accept_language(url))
             with self._urlopen(req, timeout=self._timeout_ms // 1000) as resp:
                 charset = resp.headers.get_content_charset() or "utf-8"
                 raw_html = resp.read().decode(charset, errors="replace")
@@ -528,7 +628,7 @@ class QtWebExtractor:
             log.warning("HTTP fallback failed for %s: %s", url, e)
             return None, str(e)
 
-    def extract(self, url: str) -> _ExtractionResult:
+    def _extract_with_current_profile(self, url: str) -> _ExtractionResult:
         loop = QEventLoop()
         result_holder: list[_ExtractionResult] = []
 
@@ -552,18 +652,85 @@ class QtWebExtractor:
         except ValueError:
             pass
 
-        result = result_holder[0] if result_holder else _ExtractionResult(
+        return result_holder[0] if result_holder else _ExtractionResult(
             url=url, error="Extraction failed: no result received"
         )
 
+    def _extract_with_user_agent(self, url: str, user_agent: str) -> _ExtractionResult:
+        assert self._profile is not None, "Profile has been cleaned up"
+        original_ua = self._profile.httpUserAgent()
+        switched = bool(user_agent and user_agent != original_ua)
+        if switched:
+            self._profile.setHttpUserAgent(user_agent)
+            self._http_user_agent = user_agent
+
+        try:
+            return self._extract_with_current_profile(url)
+        finally:
+            if switched and self._profile is not None:
+                self._profile.setHttpUserAgent(original_ua)
+                self._http_user_agent = original_ua
+
+    def _post_process_result(self, requested_url: str, result: _ExtractionResult, user_agent: str) -> _ExtractionResult:
         if result.error and self._looks_like_neterror_page(result):
-            fallback_result, fallback_error = self._extract_via_http_fallback(result.url or url)
+            fallback_result, fallback_error = self._extract_via_http_fallback(
+                result.url or requested_url,
+                user_agent=user_agent,
+            )
             if fallback_result is not None and fallback_result.text.strip():
                 return fallback_result
             if fallback_error:
                 result.error = f"{result.error}; HTTP fallback failed: {fallback_error}"
 
+        if self._looks_blocked(requested_url, result):
+            fallback_result, fallback_error = self._extract_via_http_fallback(
+                requested_url,
+                user_agent=user_agent,
+            )
+            if (
+                fallback_result is not None
+                and fallback_result.text.strip()
+                and not self._looks_blocked(requested_url, fallback_result)
+            ):
+                return fallback_result
+            if fallback_error:
+                msg = f"HTTP fallback failed during anti-bot recovery: {fallback_error}"
+                result.error = f"{result.error}; {msg}" if result.error else msg
+
         return result
+
+    def extract(self, url: str) -> _ExtractionResult:
+        assert self._profile is not None, "Profile has been cleaned up"
+        primary_ua = self._profile.httpUserAgent()
+        fallback_uas = self._candidate_user_agents(primary_ua)
+
+        if self._ua_mode == "rotate":
+            sequence = [primary_ua, *fallback_uas]
+        else:
+            sequence = [primary_ua]
+
+        last_result: _ExtractionResult | None = None
+        for ua in sequence:
+            if ua != primary_ua:
+                log.info("Trying alternate UA for %s", url)
+            result = self._extract_with_user_agent(url, ua)
+            result = self._post_process_result(url, result, ua)
+            last_result = result
+            if not self._looks_blocked(url, result):
+                return result
+
+        if self._ua_mode == "on_block" and self._looks_blocked(url, last_result or _ExtractionResult()):
+            for ua in fallback_uas:
+                log.info("Blocked page detected for %s, retrying with alternate UA", url)
+                result = self._extract_with_user_agent(url, ua)
+                result = self._post_process_result(url, result, ua)
+                last_result = result
+                if not self._looks_blocked(url, result):
+                    return result
+
+        return last_result if last_result is not None else _ExtractionResult(
+            url=url, error="Extraction failed: no result received"
+        )
 
     def extract_pdf(self, url_or_path: str) -> _ExtractionResult:
         """Extract text from a PDF file or URL using Qt PDF."""
