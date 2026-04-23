@@ -26,10 +26,31 @@ import json
 from qt_web_extractor.extractor import QtWebExtractor
 
 
+def _parse_ua_pool(value: str | None) -> list[str] | None:
+    if not value:
+        return None
+    items = [part.strip() for part in value.split(",")]
+    uas = [ua for ua in items if ua]
+    return uas or None
+
+
+def _resolve_ua_mode(raw_mode: str | None, user_agent: str | None) -> str:
+    mode = (raw_mode or os.environ.get("UA_MODE", "")).strip().lower()
+    if mode:
+        return mode
+    return "off" if user_agent else "on_block"
+
+
 def _cmd_extract(args):
+    ua_pool_raw = args.ua_pool if args.ua_pool is not None else os.environ.get("UA_POOL", "")
+    ua_pool = _parse_ua_pool(ua_pool_raw)
+    ua_mode = _resolve_ua_mode(args.ua_mode, args.user_agent)
+
     extractor = QtWebExtractor(
         timeout_ms=args.timeout,
         user_agent=args.user_agent,
+        ua_mode=ua_mode,
+        user_agents=ua_pool,
         proxy=args.proxy,
     )
 
@@ -61,11 +82,16 @@ def _cmd_extract(args):
 
 def _cmd_serve(args):
     from qt_web_extractor.server import serve
+    ua_pool_raw = args.ua_pool if args.ua_pool is not None else os.environ.get("UA_POOL", "")
+    ua_pool = _parse_ua_pool(ua_pool_raw)
+    ua_mode = _resolve_ua_mode(args.ua_mode, args.user_agent or None)
     serve(
         host=args.host,
         port=args.port,
         timeout_ms=args.timeout,
         user_agent=args.user_agent or None,
+        ua_mode=ua_mode,
+        user_agents=ua_pool,
         api_key=args.api_key,
         proxy=args.proxy,
     )
@@ -82,6 +108,19 @@ def main():
         flat.add_argument("urls", nargs="+", metavar="URL")
         flat.add_argument("--timeout", type=int, default=30000)
         flat.add_argument("--user-agent", type=str, default=None)
+        flat.add_argument(
+            "--ua-mode",
+            type=str,
+            default=None,
+            choices=["off", "on_block", "rotate"],
+            help="UA strategy: off | on_block | rotate",
+        )
+        flat.add_argument(
+            "--ua-pool",
+            type=str,
+            default=None,
+            help="Comma-separated fallback user-agent list for UA switching.",
+        )
         flat.add_argument(
             "--proxy",
             type=str,
@@ -105,6 +144,19 @@ def main():
     p_extract.add_argument("--timeout", type=int, default=30000)
     p_extract.add_argument("--user-agent", type=str, default=None)
     p_extract.add_argument(
+        "--ua-mode",
+        type=str,
+        default=None,
+        choices=["off", "on_block", "rotate"],
+        help="UA strategy: off | on_block | rotate",
+    )
+    p_extract.add_argument(
+        "--ua-pool",
+        type=str,
+        default=None,
+        help="Comma-separated fallback user-agent list for UA switching.",
+    )
+    p_extract.add_argument(
         "--proxy",
         type=str,
         default=None,
@@ -119,6 +171,19 @@ def main():
     p_serve.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8766")))
     p_serve.add_argument("--timeout", type=int, default=int(os.environ.get("TIMEOUT_MS", "30000")))
     p_serve.add_argument("--user-agent", type=str, default=os.environ.get("USER_AGENT", ""))
+    p_serve.add_argument(
+        "--ua-mode",
+        type=str,
+        default=None,
+        choices=["off", "on_block", "rotate"],
+        help="UA strategy: off | on_block | rotate",
+    )
+    p_serve.add_argument(
+        "--ua-pool",
+        type=str,
+        default=None,
+        help="Comma-separated fallback user-agent list for UA switching.",
+    )
     p_serve.add_argument("--api-key", type=str, default=os.environ.get("API_KEY", ""))
     p_serve.add_argument(
         "--proxy",

@@ -98,6 +98,12 @@ python -m qt_web_extractor --timeout 60000 https://example.com
 # custom User-Agent
 python -m qt_web_extractor --user-agent "MyBot/1.0" https://example.com
 
+# UA auto-switch strategy: off | on_block | rotate
+python -m qt_web_extractor --ua-mode on_block https://example.com
+
+# custom fallback UA pool (comma-separated)
+python -m qt_web_extractor --ua-pool "UA1,UA2,UA3" https://example.com
+
 # override proxy for this command
 python -m qt_web_extractor --proxy http://127.0.0.1:7890 https://example.com
 
@@ -130,6 +136,15 @@ print(result.text)
 
 # override proxy explicitly (otherwise standard proxy env vars are used)
 extractor = QtWebExtractor(proxy="http://127.0.0.1:7890")
+
+# UA strategy with custom fallback pool
+extractor = QtWebExtractor(
+    ua_mode="on_block",
+    user_agents=[
+        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+    ],
+)
 ```
 
 ### Open WebUI integration
@@ -183,6 +198,12 @@ qt-web-extractor serve --host 0.0.0.0 --port 9000
 
 # with API key auth
 qt-web-extractor serve --api-key mysecretkey
+
+# configure UA auto-switch mode
+qt-web-extractor serve --ua-mode on_block
+
+# custom fallback UA pool
+qt-web-extractor serve --ua-pool "UA1,UA2,UA3"
 
 # override proxy for the service process
 qt-web-extractor serve --proxy http://127.0.0.1:7890
@@ -309,6 +330,8 @@ sudo systemctl enable --now qt-web-extractor
 | `PORT` | `8766` | Listen port |
 | `TIMEOUT_MS` | `30000` | Page load timeout (ms) |
 | `USER_AGENT` | `""` | Custom User-Agent |
+| `UA_MODE` | `on_block` | UA strategy: `off`, `on_block`, or `rotate` |
+| `UA_POOL` | unset | Comma-separated fallback UA list (defaults to built-in mobile UA pool) |
 | `API_KEY` | `""` | Bearer token auth (empty = no auth) |
 | `HTTPS_PROXY` | unset | HTTPS outbound proxy |
 | `HTTP_PROXY` | unset | HTTP outbound proxy |

@@ -353,6 +353,8 @@ def serve(
     port: int = 8766,
     timeout_ms: int = 30000,
     user_agent: str | None = None,
+    ua_mode: str = "on_block",
+    user_agents: list[str] | tuple[str, ...] | None = None,
     api_key: str = "",
     proxy: str | None = None,
 ):
@@ -362,7 +364,13 @@ def serve(
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
 
-    extractor = QtWebExtractor(timeout_ms=timeout_ms, user_agent=user_agent, proxy=proxy)
+    extractor = QtWebExtractor(
+        timeout_ms=timeout_ms,
+        user_agent=user_agent,
+        ua_mode=ua_mode,
+        user_agents=user_agents,
+        proxy=proxy,
+    )
     app = extractor._app
 
     extract_queue: queue.Queue[_ExtractRequest | None] = queue.Queue()
@@ -377,10 +385,12 @@ def serve(
     server_thread.start()
     log.info("Listening on http://%s:%d", host, port)
     log.info(
-        "  timeout: %dms, auth: %s, proxy: %s",
+        "  timeout: %dms, auth: %s, proxy: %s, ua_mode: %s, ua_pool_size: %d",
         timeout_ms,
         "on" if api_key else "off",
         extractor.proxy_summary,
+        ua_mode,
+        len(user_agents or ()),
     )
 
     shutting_down = False
