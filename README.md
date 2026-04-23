@@ -97,6 +97,7 @@ python -m qt_web_extractor --timeout 60000 https://example.com
 
 # custom User-Agent
 python -m qt_web_extractor --user-agent "MyBot/1.0" https://example.com
+# note: UA auto-switch is still enabled by default (`on_block`)
 
 # UA auto-switch strategy: off | on_block | rotate
 python -m qt_web_extractor --ua-mode on_block https://example.com

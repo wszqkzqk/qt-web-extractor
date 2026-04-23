@@ -34,17 +34,17 @@ def _parse_ua_pool(value: str | None) -> list[str] | None:
     return uas or None
 
 
-def _resolve_ua_mode(raw_mode: str | None, user_agent: str | None) -> str:
+def _resolve_ua_mode(raw_mode: str | None) -> str:
     mode = (raw_mode or os.environ.get("UA_MODE", "")).strip().lower()
     if mode:
         return mode
-    return "off" if user_agent else "on_block"
+    return "on_block"
 
 
 def _cmd_extract(args):
     ua_pool_raw = args.ua_pool if args.ua_pool is not None else os.environ.get("UA_POOL", "")
     ua_pool = _parse_ua_pool(ua_pool_raw)
-    ua_mode = _resolve_ua_mode(args.ua_mode, args.user_agent)
+    ua_mode = _resolve_ua_mode(args.ua_mode)
 
     extractor = QtWebExtractor(
         timeout_ms=args.timeout,
@@ -84,7 +84,7 @@ def _cmd_serve(args):
     from qt_web_extractor.server import serve
     ua_pool_raw = args.ua_pool if args.ua_pool is not None else os.environ.get("UA_POOL", "")
     ua_pool = _parse_ua_pool(ua_pool_raw)
-    ua_mode = _resolve_ua_mode(args.ua_mode, args.user_agent or None)
+    ua_mode = _resolve_ua_mode(args.ua_mode)
     serve(
         host=args.host,
         port=args.port,
