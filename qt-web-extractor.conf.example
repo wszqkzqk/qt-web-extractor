@@ -22,3 +22,12 @@ TIMEOUT_MS=30000
 #HTTP_PROXY=http://127.0.0.1:7890
 #ALL_PROXY=http://127.0.0.1:7890
 #NO_PROXY=127.0.0.1,localhost,.internal.example
+
+# Mineru API key for high-fidelity PDF extraction (empty = local QtPdf fallback)
+#MINERU_API_KEY=
+
+# Timeout for Mineru API polling in milliseconds, default 300000 (5 minutes)
+#MINERU_TIMEOUT_MS=300000
+
+# Mineru API base URL, supports self-hosted deployments
+#MINERU_BASE_URL=https://mineru.net

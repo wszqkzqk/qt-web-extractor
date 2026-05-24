@@ -308,19 +308,26 @@ class _Handler(BaseHTTPRequestHandler):
                 log.info("  -> %s (pdf=%s)", url, pdf)
                 result = self._extract_one(url, pdf=pdf)
                 if result is None:
-                    documents.append({
-                        "page_content": "",
-                        "metadata": {"source": url, "error": "extraction timed out"},
-                    })
+                    documents.append(
+                        {
+                            "page_content": "",
+                            "metadata": {
+                                "source": url,
+                                "error": "extraction timed out",
+                            },
+                        }
+                    )
                 else:
-                    documents.append({
-                        "page_content": result.text,
-                        "metadata": {
-                            "source": result.url or url,
-                            "title": result.title,
-                            **({"error": result.error} if result.error else {}),
-                        },
-                    })
+                    documents.append(
+                        {
+                            "page_content": result.text,
+                            "metadata": {
+                                "source": result.url or url,
+                                "title": result.title,
+                                **({"error": result.error} if result.error else {}),
+                            },
+                        }
+                    )
             self._send_json(documents)
             return
 
@@ -355,6 +362,9 @@ def serve(
     user_agent: str | None = None,
     api_key: str = "",
     proxy: str | None = None,
+    mineru_api_key: str = "",
+    mineru_timeout_ms: int = 300000,
+    mineru_base_url: str = "https://mineru.net",
 ):
     """Start the extraction server. Blocks forever (runs Qt event loop)."""
     logging.basicConfig(
@@ -362,7 +372,14 @@ def serve(
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
 
-    extractor = QtWebExtractor(timeout_ms=timeout_ms, user_agent=user_agent, proxy=proxy)
+    extractor = QtWebExtractor(
+        timeout_ms=timeout_ms,
+        user_agent=user_agent,
+        proxy=proxy,
+        mineru_api_key=mineru_api_key,
+        mineru_timeout_ms=mineru_timeout_ms,
+        mineru_base_url=mineru_base_url,
+    )
     app = extractor._app
 
     extract_queue: queue.Queue[_ExtractRequest | None] = queue.Queue()
@@ -410,7 +427,9 @@ def serve(
             poll_timer.stop()
             app.quit()
             return
-        result = extractor.extract_pdf(req.url) if req.pdf else extractor.extract(req.url)
+        result = (
+            extractor.extract_pdf(req.url) if req.pdf else extractor.extract(req.url)
+        )
         req.result = result
         req.done.set()
 

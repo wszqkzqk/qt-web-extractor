@@ -31,6 +31,9 @@ def _cmd_extract(args):
         timeout_ms=args.timeout,
         user_agent=args.user_agent,
         proxy=args.proxy,
+        mineru_api_key=getattr(args, "mineru_api_key", ""),
+        mineru_timeout_ms=getattr(args, "mineru_timeout", 300000),
+        mineru_base_url=getattr(args, "mineru_base_url", "https://mineru.net"),
     )
 
     results = []
@@ -61,6 +64,7 @@ def _cmd_extract(args):
 
 def _cmd_serve(args):
     from qt_web_extractor.server import serve
+
     serve(
         host=args.host,
         port=args.port,
@@ -68,6 +72,9 @@ def _cmd_serve(args):
         user_agent=args.user_agent or None,
         api_key=args.api_key,
         proxy=args.proxy,
+        mineru_api_key=getattr(args, "mineru_api_key", ""),
+        mineru_timeout_ms=getattr(args, "mineru_timeout", 300000),
+        mineru_base_url=getattr(args, "mineru_base_url", "https://mineru.net"),
     )
 
 
@@ -91,6 +98,24 @@ def main():
         flat.add_argument("--json", action="store_true", dest="output_json")
         flat.add_argument("--html", action="store_true")
         flat.add_argument("--pdf", action="store_true", help="Force PDF extraction")
+        flat.add_argument(
+            "--mineru-api-key",
+            type=str,
+            default=os.environ.get("MINERU_API_KEY", ""),
+            help="MinerU API Key for PDF extraction",
+        )
+        flat.add_argument(
+            "--mineru-timeout",
+            type=int,
+            default=int(os.environ.get("MINERU_TIMEOUT_MS", "300000")),
+            help="Timeout for MinerU API in ms",
+        )
+        flat.add_argument(
+            "--mineru-base-url",
+            type=str,
+            default=os.environ.get("MINERU_BASE_URL", "https://mineru.net"),
+            help="MinerU API base URL (supports self-hosted MinerU)",
+        )
         _cmd_extract(flat.parse_args())
         return
 
@@ -113,13 +138,55 @@ def main():
     p_extract.add_argument("--json", action="store_true", dest="output_json")
     p_extract.add_argument("--html", action="store_true")
     p_extract.add_argument("--pdf", action="store_true", help="Force PDF extraction")
+    p_extract.add_argument(
+        "--mineru-api-key",
+        type=str,
+        default=os.environ.get("MINERU_API_KEY", ""),
+        help="MinerU API Key for PDF extraction",
+    )
+    p_extract.add_argument(
+        "--mineru-timeout",
+        type=int,
+        default=int(os.environ.get("MINERU_TIMEOUT_MS", "300000")),
+        help="Timeout for MinerU API in ms",
+    )
+    p_extract.add_argument(
+        "--mineru-base-url",
+        type=str,
+        default=os.environ.get("MINERU_BASE_URL", "https://mineru.net"),
+        help="MinerU API base URL (supports self-hosted MinerU)",
+    )
 
     p_serve = sub.add_parser("serve", help="Run as HTTP extraction server.")
     p_serve.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
-    p_serve.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8766")))
-    p_serve.add_argument("--timeout", type=int, default=int(os.environ.get("TIMEOUT_MS", "30000")))
-    p_serve.add_argument("--user-agent", type=str, default=os.environ.get("USER_AGENT", ""))
+    p_serve.add_argument(
+        "--port", type=int, default=int(os.environ.get("PORT", "8766"))
+    )
+    p_serve.add_argument(
+        "--timeout", type=int, default=int(os.environ.get("TIMEOUT_MS", "30000"))
+    )
+    p_serve.add_argument(
+        "--user-agent", type=str, default=os.environ.get("USER_AGENT", "")
+    )
     p_serve.add_argument("--api-key", type=str, default=os.environ.get("API_KEY", ""))
+    p_serve.add_argument(
+        "--mineru-api-key",
+        type=str,
+        default=os.environ.get("MINERU_API_KEY", ""),
+        help="MinerU API Key for PDF extraction",
+    )
+    p_serve.add_argument(
+        "--mineru-timeout",
+        type=int,
+        default=int(os.environ.get("MINERU_TIMEOUT_MS", "300000")),
+        help="Timeout for MinerU API in ms",
+    )
+    p_serve.add_argument(
+        "--mineru-base-url",
+        type=str,
+        default=os.environ.get("MINERU_BASE_URL", "https://mineru.net"),
+        help="MinerU API base URL (supports self-hosted MinerU)",
+    )
     p_serve.add_argument(
         "--proxy",
         type=str,
