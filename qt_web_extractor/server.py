@@ -18,6 +18,7 @@
 # You should have received a copy of the GNU General Public License
 # along with Qt Web Extractor. If not, see <https://www.gnu.org/licenses/>.
 
+import base64
 import json
 import logging
 import queue
@@ -33,7 +34,7 @@ except Exception:
 
 from PySide6.QtCore import QTimer
 
-from qt_web_extractor.extractor import QtWebExtractor, _ExtractionResult
+from qt_web_extractor.extractor import QtWebExtractor, _ExtractionResult, _ImageResult
 
 log = logging.getLogger("qt-web-extractor")
 
@@ -42,12 +43,13 @@ _MCP_MAX_RESULT_CHARS = 500000
 
 
 class _ExtractRequest:
-    __slots__ = ("url", "pdf", "result", "done")
+    __slots__ = ("url", "pdf", "image", "result", "done")
 
-    def __init__(self, url: str, pdf: bool = False):
+    def __init__(self, url: str, pdf: bool = False, image: bool = False):
         self.url = url
         self.pdf = pdf
-        self.result: _ExtractionResult | None = None
+        self.image = image
+        self.result = None
         self.done = threading.Event()
 
 
@@ -121,6 +123,13 @@ class _Handler(BaseHTTPRequestHandler):
             return None
         return req.result
 
+    def _image_one(self, url: str) -> _ImageResult | None:
+        req = _ExtractRequest(url, image=True)
+        self.extract_queue.put(req)
+        if not req.done.wait(timeout=self.timeout_s):
+            return None
+        return req.result
+
     @staticmethod
     def _mcp_tools() -> list[dict]:
         return [
@@ -143,18 +152,43 @@ class _Handler(BaseHTTPRequestHandler):
                 "_meta": {
                     "anthropic/maxResultSizeChars": _MCP_MAX_RESULT_CHARS,
                 },
-            }
+            },
+            {
+                "name": "fetch_image",
+                "description": (
+                    "Fetches an image and returns it as image content you can see. "
+                    "You can also use it to view images linked in Markdown returned by fetch_url. "
+                    "Resolve site-relative links against the page URL first: e.g. "
+                    "after fetching https://xxx.yyy/foo/bar.html, view "
+                    "![baz](/baz/img.png) by calling this tool with "
+                    "https://xxx.yyy/baz/img.png. Only absolute http(s) URLs."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "The absolute http(s) URL of the image to fetch.",
+                        }
+                    },
+                    "required": ["url"],
+                    "additionalProperties": False,
+                },
+            },
         ]
 
-    def _mcp_call_fetch_url(self, params: dict) -> dict:
+    def _mcp_call_tool(self, params: dict) -> dict:
         name = params.get("name")
-        if name != "fetch_url":
-            raise ValueError("unknown tool name")
-
         arguments = params.get("arguments", {})
         if not isinstance(arguments, dict):
             raise ValueError("arguments must be an object")
+        if name == "fetch_url":
+            return self._mcp_call_fetch_url(arguments)
+        if name == "fetch_image":
+            return self._mcp_call_fetch_image(arguments)
+        raise ValueError("unknown tool name")
 
+    def _mcp_call_fetch_url(self, arguments: dict) -> dict:
         url = arguments.get("url")
         if not isinstance(url, str):
             raise ValueError("arguments.url must be a string")
@@ -163,9 +197,14 @@ class _Handler(BaseHTTPRequestHandler):
         if not url:
             raise ValueError("arguments.url is required")
 
-        pdf = self._is_pdf(url, self.extractor)
-        log.info("MCP fetch_url: %s (pdf=%s)", url, pdf)
-        result = self._extract_one(url, pdf=pdf)
+        kind = self.extractor.detect_url_kind(url)
+        log.info("MCP fetch_url: %s (kind=%s)", url, kind)
+
+        if kind == "image":
+            # The URL actually points to an image; serve it as image content.
+            return self._mcp_image_result(url)
+
+        result = self._extract_one(url, pdf=(kind == "pdf"))
 
         if result is None:
             timeout_error = "extraction timed out"
@@ -202,6 +241,62 @@ class _Handler(BaseHTTPRequestHandler):
         return {
             "content": [{"type": "text", "text": text}],
             "structuredContent": response,
+            "isError": False,
+        }
+
+    def _mcp_call_fetch_image(self, arguments: dict) -> dict:
+        url = arguments.get("url")
+        if not isinstance(url, str):
+            raise ValueError("arguments.url must be a string")
+
+        url = url.strip()
+        if not url:
+            raise ValueError("arguments.url is required")
+
+        return self._mcp_image_result(url)
+
+    def _mcp_image_result(self, url: str) -> dict:
+        log.info("MCP fetch_image: %s", url)
+        result = self._image_one(url)
+
+        if result is None:
+            timeout_error = "image fetch timed out"
+            return {
+                "content": [{"type": "text", "text": f"Error: {timeout_error}"}],
+                "structuredContent": _ImageResult(url=url, error=timeout_error).to_dict(),
+                "isError": True,
+            }
+
+        info = result.to_dict()
+        if result.error or not result.data or not result.mime_type:
+            error = result.error or "no image data"
+            return {
+                "content": [{"type": "text", "text": f"Error: {error}"}],
+                "structuredContent": info,
+                "isError": True,
+            }
+
+        dims = (
+            f"{result.width}x{result.height}"
+            if result.width and result.height
+            else "unknown dimensions"
+        )
+        return {
+            "content": [
+                {
+                    "type": "image",
+                    "data": base64.b64encode(result.data).decode("ascii"),
+                    "mimeType": result.mime_type,
+                },
+                {
+                    "type": "text",
+                    "text": (
+                        f"Image fetched: {result.url}\n"
+                        f"Format: {result.mime_type}, {dims}, {len(result.data)} bytes"
+                    ),
+                },
+            ],
+            "structuredContent": info,
             "isError": False,
         }
 
@@ -270,7 +365,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         if method == "tools/call":
             try:
-                result = self._mcp_call_fetch_url(params)
+                result = self._mcp_call_tool(params)
             except ValueError as e:
                 self._send_mcp_error(request_id, -32602, "Invalid params", {"reason": str(e)})
                 return
@@ -410,7 +505,19 @@ def serve(
             poll_timer.stop()
             app.quit()
             return
-        result = extractor.extract_pdf(req.url) if req.pdf else extractor.extract(req.url)
+        try:
+            if req.image:
+                result = extractor.fetch_image(req.url)
+            elif req.pdf:
+                result = extractor.extract_pdf(req.url)
+            else:
+                result = extractor.extract(req.url)
+        except Exception as e:
+            log.exception("Extraction failed for %s", req.url)
+            if req.image:
+                result = _ImageResult(url=req.url, error=str(e))
+            else:
+                result = _ExtractionResult(url=req.url, error=str(e))
         req.result = result
         req.done.set()
 
