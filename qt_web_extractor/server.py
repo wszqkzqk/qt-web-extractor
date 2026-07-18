@@ -39,7 +39,6 @@ from qt_web_extractor.extractor import QtWebExtractor, _ExtractionResult, _Image
 log = logging.getLogger("qt-web-extractor")
 
 _MCP_PROTOCOL_VERSION = "2024-11-05"
-_MCP_MAX_RESULT_CHARS = 500000
 
 
 class _ExtractRequest:
@@ -148,9 +147,6 @@ class _Handler(BaseHTTPRequestHandler):
                     },
                     "required": ["url"],
                     "additionalProperties": False,
-                },
-                "_meta": {
-                    "anthropic/maxResultSizeChars": _MCP_MAX_RESULT_CHARS,
                 },
             },
             {
