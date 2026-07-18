@@ -605,23 +605,33 @@ class QtWebExtractor:
             req = urllib.request.Request(url, method="HEAD")
             req.add_header("User-Agent", self._http_user_agent)
             with self._urlopen(req, timeout=timeout) as resp:
+                if "Content-Type" not in resp.headers:
+                    return ""
                 return resp.headers.get_content_type().lower()
         except Exception:
             return ""
 
     def detect_url_kind(self, url: str, timeout: int = 10) -> str:
-        """Classify *url* as "pdf", "image", or "page" (suffix fast path, else HEAD)."""
-        path = urllib.parse.urlparse(url).path.rstrip("/").lower()
+        """Classify *url* as "pdf", "image", or "page".
 
-        if path.endswith(".pdf"):
-            return "pdf"
-        if path.endswith(_IMAGE_URL_SUFFIXES):
-            return "image"
-
+        A HEAD Content-Type is authoritative when available (a suffix can lie:
+        dynamic routes may serve HTML from URLs ending in .png or .pdf); the
+        suffix is only a fallback for when HEAD fails or the scheme is not
+        http(s).
+        """
         ct = self._head_content_type(url, timeout)
         if "application/pdf" in ct:
             return "pdf"
         if ct.startswith("image/"):
+            return "image"
+        # octet-stream means "no idea", let the suffix decide below.
+        if ct and ct != "application/octet-stream":
+            return "page"
+
+        path = urllib.parse.urlparse(url).path.rstrip("/").lower()
+        if path.endswith(".pdf"):
+            return "pdf"
+        if path.endswith(_IMAGE_URL_SUFFIXES):
             return "image"
         return "page"
 
