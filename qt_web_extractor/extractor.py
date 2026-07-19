@@ -22,6 +22,7 @@ import os
 import sys
 import json
 import atexit
+import base64
 import html as html_lib
 import logging
 import re
@@ -37,6 +38,7 @@ from PySide6.QtPdf import QPdfDocument
 from PySide6.QtWebEngineCore import (
     QWebEnginePage,
     QWebEngineProfile,
+    QWebEngineScript,
     QWebEngineSettings,
 )
 
@@ -49,6 +51,93 @@ os.environ.setdefault(
 )
 
 log = logging.getLogger("qt-web-extractor")
+
+_IMAGE_URL_SUFFIXES = (
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".avif",
+    ".svg",
+    ".bmp",
+    ".ico",
+)
+
+# Long-edge cap for rendered images (high-res tier of current vision models).
+_RENDER_MAX_EDGE = 2576
+
+# Defensive cap on decoded rendered-image bytes.
+_RENDER_MAX_BYTES = 16 * 1024 * 1024
+
+# Isolated JS world: page scripts cannot see or forge window.__qr.
+_JS_WORLD = QWebEngineScript.ScriptWorldId.ApplicationWorld
+
+# Canvas-rasterize the loaded image and stash a JSON data URL in window.__qr.
+# window.__att is driven by the Qt poll timer (JS timers are clamped on hidden pages).
+_RENDER_JS = r"""
+window.__qr = null;
+window.__att = (function () {
+  const EDGE = @EDGE@;
+  let attempts = 0;
+  let lastErr = 'Image failed to load or decode';
+  function finish(v) {
+    if (window.__qr) return;
+    window.__qr = v;
+    window.__att = null;
+  }
+  function mount(im) {
+    try {
+      const w = im.naturalWidth, h = im.naturalHeight;
+      if (!w || !h) { throw new Error('no intrinsic size'); }
+      const scale = Math.min(1, EDGE / Math.max(w, h));
+      const cw = Math.max(1, Math.round(w * scale));
+      const ch = Math.max(1, Math.round(h * scale));
+      const c = document.createElementNS('http://www.w3.org/1999/xhtml', 'canvas');
+      c.width = cw; c.height = ch;
+      c.getContext('2d').drawImage(im, 0, 0, cw, ch);
+      let data = c.toDataURL('image/webp', 0.8);
+      if (data.indexOf('data:image/webp') !== 0) data = c.toDataURL('image/jpeg', 0.8);
+      finish(JSON.stringify({data: data, w: cw, h: ch}));
+    } catch (e) { finish('Render error: ' + e); }
+  }
+  return function () {
+    if (window.__qr) return;
+    attempts += 1;
+    try {
+      const b = document.body;
+      if (b && b.className && b.className.indexOf('neterror') !== -1) {
+        // Chromium's built-in network error page: a dead end, fail fast.
+        finish('Network error: the browser could not load the URL');
+        return;
+      }
+      const ct = document.contentType || '';
+      if (ct.indexOf('image/') === 0) {
+        const docImg = document.querySelector('img');
+        if (docImg && docImg.naturalWidth) { mount(docImg); return; }
+        if (attempts >= @ATTEMPTS@) { finish(lastErr); return; }
+        const im = new Image();
+        im.onload = function () { mount(im); };
+        im.onerror = function () { lastErr = 'Image failed to load or decode'; };
+        im.src = location.href;
+      } else if (attempts >= @ATTEMPTS@) {
+        // Non-image page: wait the full budget (scripts may still navigate
+        // away), then report title + text so the caller can self-diagnose.
+        let msg = 'The URL did not return an image (Content-Type: ' + (ct || 'unknown') + ')';
+        try {
+          const t = (document.title || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+          if (t) { msg += '. Page title: "' + t + '"'; }
+          const txt = (b && b.innerText ? b.innerText : '').replace(/\s+/g, ' ').trim().slice(0, 1500);
+          if (txt) { msg += '. Page content: ' + txt; }
+        } catch (e) {}
+        msg += ' (If this is a temporary interstitial such as a bot check, call fetch_image again: the browser session persists across calls and the check may have completed during this attempt.)';
+        finish(msg);
+      }
+    } catch (e) { lastErr = String(e); }
+  };
+})();
+window.__att();
+"""
 
 
 @dataclass(frozen=True)
@@ -84,6 +173,36 @@ class _ExtractionResult:
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), ensure_ascii=False)
+
+
+class _ImageResult:
+    __slots__ = ("url", "mime_type", "data", "width", "height", "error")
+
+    def __init__(
+        self,
+        url: str = "",
+        mime_type: str = "",
+        data: bytes = b"",
+        width: int = 0,
+        height: int = 0,
+        error: str = "",
+    ):
+        self.url = url
+        self.mime_type = mime_type
+        self.data = data
+        self.width = width
+        self.height = height
+        self.error = error
+
+    def to_dict(self) -> dict:
+        return {
+            "url": self.url,
+            "mime_type": self.mime_type,
+            "width": self.width,
+            "height": self.height,
+            "size_bytes": len(self.data),
+            "error": self.error,
+        }
 
 
 class _WebPage(QWebEnginePage):
@@ -123,7 +242,7 @@ class _WebPage(QWebEnginePage):
             return
         if ok:
             self._load_ok = True
-        # ok=False may just be a JS challenge redirect; wait and retry.
+        # ok=False may just be an intermediate redirect; wait and retry.
         self._stability_timer.start()
 
     def _on_timeout(self):
@@ -191,7 +310,7 @@ class _WebPage(QWebEnginePage):
         if not shadow_html or not shadow_html.strip():
             self.toHtml(self._on_html_ready)
             return
-        # Anubis challenge page self-redirects after PoW; skip and wait.
+        # Intermediate pages may self-redirect after scripts run; skip and wait.
         if not self._result.error and ('id="anubis_challenge"' in shadow_html or self.title() == "Making sure you're not a bot!"):
             return
         self._on_html_ready(shadow_html)
@@ -309,7 +428,14 @@ class QtWebExtractor:
             )
         else:
             self._proxy_url_opener = self._direct_url_opener
-        self._pages: list[_WebPage] = []
+        self._pages: list[QWebEnginePage] = []
+        self._render_profile = QWebEngineProfile()
+        if self._user_agent:
+            self._render_profile.setHttpUserAgent(self._user_agent)
+        # fetch_image shares cookies set during extraction.
+        self._profile.cookieStore().cookieAdded.connect(
+            self._render_profile.cookieStore().setCookie
+        )
 
         atexit.register(self._cleanup)
 
@@ -473,30 +599,55 @@ class QtWebExtractor:
             except RuntimeError:
                 pass
             self._profile = None
+        if self._render_profile is not None:
+            try:
+                if shiboken6.isValid(self._render_profile):
+                    shiboken6.delete(self._render_profile)
+            except RuntimeError:
+                pass
+            self._render_profile = None
 
-    def detect_pdf_url(self, url: str, timeout: int = 10) -> bool:
-        """Check if *url* points to a PDF.
-
-        ``.pdf`` suffix is a fast path; otherwise for http(s) URLs a HEAD
-        request is sent to check Content-Type.
-        """
-        parsed = urllib.parse.urlparse(url)
-        path = parsed.path.rstrip("/").lower()
-
-        if path.endswith(".pdf"):
-            return True
-
-        if parsed.scheme not in ("http", "https"):
-            return False
-
+    def _head_content_type(self, url: str, timeout: int = 10) -> str:
+        """Return the lowercase Content-Type of *url* via a HEAD request, or ""."""
+        if urllib.parse.urlparse(url).scheme not in ("http", "https"):
+            return ""
         try:
             req = urllib.request.Request(url, method="HEAD")
             req.add_header("User-Agent", self._http_user_agent)
             with self._urlopen(req, timeout=timeout) as resp:
-                ct = resp.headers.get("Content-Type", "")
-                return "application/pdf" in ct.lower()
+                if "Content-Type" not in resp.headers:
+                    return ""
+                return resp.headers.get_content_type().lower()
         except Exception:
-            return False
+            return ""
+
+    def detect_url_kind(self, url: str, timeout: int = 10) -> str:
+        """Classify *url* as "pdf", "image", or "page".
+
+        A HEAD Content-Type is authoritative when available (a suffix can lie:
+        dynamic routes may serve HTML from URLs ending in .png or .pdf); the
+        suffix is only a fallback for when HEAD fails or the scheme is not
+        http(s).
+        """
+        ct = self._head_content_type(url, timeout)
+        if "application/pdf" in ct:
+            return "pdf"
+        if ct.startswith("image/"):
+            return "image"
+        # octet-stream means "no idea", let the suffix decide below.
+        if ct and ct != "application/octet-stream":
+            return "page"
+
+        path = urllib.parse.urlparse(url).path.rstrip("/").lower()
+        if path.endswith(".pdf"):
+            return "pdf"
+        if path.endswith(_IMAGE_URL_SUFFIXES):
+            return "image"
+        return "page"
+
+    def detect_pdf_url(self, url: str, timeout: int = 10) -> bool:
+        """Check if *url* points to a PDF."""
+        return self.detect_url_kind(url, timeout) == "pdf"
 
     @classmethod
     def _looks_like_neterror_page(cls, result: _ExtractionResult) -> bool:
@@ -607,6 +758,101 @@ class QtWebExtractor:
         except Exception as e:
             result.error = str(e)
 
+        return result
+
+    def fetch_image(self, url: str) -> _ImageResult:
+        """Load an image URL in the browser and return it rasterized as WebP.
+
+        Must run on the Qt main thread.
+        """
+        result = _ImageResult(url=url)
+        if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
+            result.error = "Only absolute http(s) image URLs are supported"
+            return result
+
+        page = QWebEnginePage(self._render_profile)
+        self._pages.append(page)
+
+        loop = QEventLoop()
+        state: dict = {"out": None, "final_url": "", "error": "Image render failed"}
+
+        timeout_timer = QTimer(page)
+        timeout_timer.setSingleShot(True)
+        timeout_timer.setInterval(self._timeout_ms)
+
+        poll_timer = QTimer(page)
+        poll_timer.setInterval(500)
+
+        def on_probe(value):
+            if not value:  # None/empty before the injected script sets __qr
+                return
+            state["out"] = value
+            state["final_url"] = page.url().toString()
+            poll_timer.stop()
+            timeout_timer.stop()
+            loop.quit()
+
+        def on_timeout():
+            state["error"] = "Image render timed out"
+            poll_timer.stop()
+            loop.quit()
+
+        def on_load_finished(_ok):
+            # Re-inject on every navigation: pages may redirect.
+            # JS budget ends 5s early so its error wins over the Qt timeout.
+            js = _RENDER_JS.replace("@EDGE@", str(_RENDER_MAX_EDGE)).replace(
+                "@ATTEMPTS@", str(max(2, (self._timeout_ms - 5000) // 500))
+            )
+            page.runJavaScript(js, _JS_WORLD)
+
+        try:
+            page.loadFinished.connect(on_load_finished)
+            # Qt timer drives window.__att (JS timers are clamped on hidden pages).
+            poll_timer.timeout.connect(
+                lambda: page.runJavaScript(
+                    "window.__qr || (window.__att && window.__att(), window.__qr)",
+                    _JS_WORLD,
+                    on_probe,
+                )
+            )
+            timeout_timer.timeout.connect(on_timeout)
+            timeout_timer.start()
+            poll_timer.start()
+            page.load(QUrl(url))
+            loop.exec()
+        finally:
+            if shiboken6.isValid(page):
+                shiboken6.delete(page)
+            try:
+                self._pages.remove(page)
+            except ValueError:
+                pass
+
+        out = state["out"]
+        if not isinstance(out, str) or not out.startswith("{"):
+            result.error = out if isinstance(out, str) else state["error"]
+            return result
+
+        try:
+            payload = json.loads(out)
+            header, b64 = payload["data"].split(",", 1)
+            if not header.startswith("data:image/"):
+                raise ValueError(header)
+            if len(b64) > (_RENDER_MAX_BYTES * 4) // 3 + 8:
+                result.error = (
+                    f"Rendered image exceeds "
+                    f"{_RENDER_MAX_BYTES // (1024 * 1024)} MB"
+                )
+                return result
+            result.data = base64.b64decode(b64)
+            result.mime_type = header[len("data:"):].split(";", 1)[0]
+        except Exception:
+            result.error = "Image render failed: bad canvas data"
+            return result
+
+        result.url = state["final_url"] or result.url
+        result.width = int(payload.get("w") or 0)
+        result.height = int(payload.get("h") or 0)
         return result
 
     def extract_multiple(self, urls: list[str]) -> list[_ExtractionResult]:

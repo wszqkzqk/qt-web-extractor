@@ -15,6 +15,8 @@ Also supports extracting text from PDF documents via Qt PDF.
   gates.
 - **PDF text extraction** — extract text from PDF documents via Qt PDF with
   auto-detection.
+- **Multimodal MCP support** — serve images to vision-capable agents as
+  native MCP image content, fetched through the same full browser engine.
 - **Multiple interfaces** — use as a CLI tool, Python library, or HTTP
   service with a simple REST API.
 - **Headless operation** — runs in Qt offscreen mode, no display or GPU
@@ -96,7 +98,7 @@ python -m qt_web_extractor --html https://example.com
 python -m qt_web_extractor --timeout 60000 https://example.com
 
 # custom User-Agent
-python -m qt_web_extractor --user-agent "MyBot/1.0" https://example.com
+python -m qt_web_extractor --user-agent "MyApp/1.0" https://example.com
 
 # override proxy for this command
 python -m qt_web_extractor --proxy http://127.0.0.1:7890 https://example.com
@@ -217,9 +219,20 @@ The built-in MCP endpoint (`/mcp`) reuses the same running server process.
 No extra wrapper process is required.
 MCP uses the same Bearer authentication as `/extract`.
 
-Available MCP tool:
-- `fetch_url` with input `{ "url": "https://..." }`
-- Returns rendered Markdown text (with PDF auto-detection)
+Available MCP tools:
+- `fetch_url` with input `{ "url": "https://..." }` — returns rendered
+  Markdown text (with PDF auto-detection)
+- `fetch_image` with input `{ "url": "https://.../img.png" }` — loads an
+  image through the same full browser engine and returns it as
+  WebP image content that multimodal models can view directly, capped at
+  2576 px on the long edge (the high-resolution tier of current vision
+  models). Any browser-renderable format works — PNG, JPEG, GIF, WebP,
+  SVG, AVIF, ICO, ... Only absolute http(s) URLs.
+
+  Site-relative image links in fetched Markdown must be resolved against
+  the page URL first: after fetching `https://xxx.yyy/foo/bar.html`, an
+  image like `![baz](/baz/img.png)` is viewed by calling `fetch_image` with
+  `https://xxx.yyy/baz/img.png`.
 
 Claude Code example:
 
@@ -323,8 +336,8 @@ at a time by the Qt event loop. Each page gets 2 seconds after `loadFinished`
 for JS to settle, then `toPlainText()` and `toHtml()` are extracted from the
 rendered DOM. A hard timeout prevents hanging on unresponsive pages.
 
-Sites behind Cloudflare's aggressive bot challenge may still fail — this is a
-known limitation of all headless browsers.
+Pages that require human verification may still fail — this is a known
+limitation of all headless browsers.
 
 ## Project layout
 
