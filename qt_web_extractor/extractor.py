@@ -52,7 +52,17 @@ os.environ.setdefault(
 
 log = logging.getLogger("qt-web-extractor")
 
-_IMAGE_URL_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+_IMAGE_URL_SUFFIXES = (
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".avif",
+    ".svg",
+    ".bmp",
+    ".ico",
+)
 
 # Long-edge cap for rendered images (high-res tier of current vision models).
 _RENDER_MAX_EDGE = 2576
