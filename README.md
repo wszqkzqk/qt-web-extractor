@@ -186,6 +186,9 @@ qt-web-extractor serve --host 0.0.0.0 --port 9000
 # with API key auth
 qt-web-extractor serve --api-key mysecretkey
 
+# let clients read server-local files (file:// URLs, local paths)
+qt-web-extractor serve --allow-local-files
+
 # override proxy for the service process
 qt-web-extractor serve --proxy http://127.0.0.1:7890
 ```
@@ -323,6 +326,7 @@ sudo systemctl enable --now qt-web-extractor
 | `TIMEOUT_MS` | `30000` | Page load timeout (ms) |
 | `USER_AGENT` | `""` | Custom User-Agent |
 | `API_KEY` | `""` | Bearer token auth (empty = no auth) |
+| `ALLOW_LOCAL_FILES` | `""` | Allow reading local files (`file://` URLs, local paths) for clients |
 | `HTTPS_PROXY` | unset | HTTPS outbound proxy |
 | `HTTP_PROXY` | unset | HTTP outbound proxy |
 | `ALL_PROXY` | unset | Fallback outbound proxy |

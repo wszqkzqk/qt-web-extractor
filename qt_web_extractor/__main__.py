@@ -68,6 +68,7 @@ def _cmd_serve(args):
         user_agent=args.user_agent or None,
         api_key=args.api_key,
         proxy=args.proxy,
+        allow_local_files=args.allow_local_files,
     )
 
 
@@ -120,6 +121,13 @@ def main():
     p_serve.add_argument("--timeout", type=int, default=int(os.environ.get("TIMEOUT_MS", "30000")))
     p_serve.add_argument("--user-agent", type=str, default=os.environ.get("USER_AGENT", ""))
     p_serve.add_argument("--api-key", type=str, default=os.environ.get("API_KEY", ""))
+    p_serve.add_argument(
+        "--allow-local-files",
+        action=argparse.BooleanOptionalAction,
+        default=os.environ.get("ALLOW_LOCAL_FILES", "").lower() in ("1", "true", "yes"),
+        help="Let the server access local files (file:// URLs and local "
+        "paths). Off by default.",
+    )
     p_serve.add_argument(
         "--proxy",
         type=str,
