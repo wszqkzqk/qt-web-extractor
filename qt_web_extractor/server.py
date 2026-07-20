@@ -19,10 +19,12 @@
 # along with Qt Web Extractor. If not, see <https://www.gnu.org/licenses/>.
 
 import base64
+import ipaddress
 import json
 import logging
 import queue
 import signal
+import socket
 import threading
 import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -48,16 +50,71 @@ _LOCAL_SCHEMES = frozenset({"file"})
 # Any other scheme (data:, javascript:, chrome:, ...) is rejected outright.
 
 
-def _url_access_error(url: str, allow_local_files: bool) -> str | None:
+def parse_allow_cidrs(values: list[str]) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    """Parse --allow-cidr values into networks; "all" allows everything."""
+    networks = []
+    for value in values:
+        for token in value.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            if token.lower() == "all":
+                networks.extend([
+                    ipaddress.IPv4Network("0.0.0.0/0"),
+                    ipaddress.IPv6Network("::/0"),
+                ])
+                continue
+            try:
+                networks.append(ipaddress.ip_network(token))
+            except ValueError:
+                raise ValueError(f"invalid CIDR: {token!r}") from None
+    return networks
+
+
+def _target_ip_error(url: str, allow_cidrs) -> str | None:
+    """Error message if *url*'s host resolves to a disallowed IP, else None.
+
+    Every resolved address must be globally routable or inside an
+    --allow-cidr range. Resolution happens again at connect time (in
+    Chromium or urllib), so this is best-effort against honest DNS and
+    cannot stop DNS rebinding; the authoritative control is network-level
+    egress filtering. Redirects are followed inside Chromium and are not
+    re-validated.
+    """
+    hostname = urllib.parse.urlsplit(url).hostname
+    if not hostname:
+        return "unsupported or invalid URL"
+    try:
+        infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+        ips = {info[4][0] for info in infos}
+    except socket.gaierror:
+        log.warning("Denied URL with unresolvable host %r: %s", hostname, url)
+        return "unsupported or invalid URL"
+    if not ips:
+        log.warning("Denied URL with unresolvable host %r: %s", hostname, url)
+        return "unsupported or invalid URL"
+    for raw in ips:
+        ip = ipaddress.ip_address(raw)
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        if ip.is_global or any(ip in net for net in allow_cidrs):
+            continue
+        log.warning("Denied URL %s: host resolves to non-public IP %s", url, ip)
+        return "this server does not allow private or reserved IP addresses"
+    return None
+
+
+def _url_access_error(url: str, allow_local_files: bool, allow_cidrs=()) -> str | None:
     """Error message if the server may not access *url*, else None.
 
-    Remote content (http/https/ftp) is always allowed; local files
-    (file://, bare paths, Windows drive paths) require local file access
-    to be enabled; any other scheme is rejected.
+    Local files (file://, bare paths, Windows drive paths) require
+    --allow-local-files; remote content (http/https/ftp) must resolve to
+    public IPs unless covered by --allow-cidr; any other scheme is
+    rejected.
     """
     scheme = urllib.parse.urlsplit(_as_url(url)).scheme.lower()
     if scheme in _REMOTE_SCHEMES:
-        return None
+        return _target_ip_error(url, allow_cidrs)
     if scheme in _LOCAL_SCHEMES:
         if allow_local_files:
             return None
@@ -474,12 +531,15 @@ def serve(
     api_key: str = "",
     proxy: str | None = None,
     allow_local_files: bool = False,
+    allow_cidrs: list[str] | None = None,
 ):
     """Start the extraction server. Blocks forever (runs Qt event loop)."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
+
+    networks = parse_allow_cidrs(allow_cidrs or [])
 
     extractor = QtWebExtractor(timeout_ms=timeout_ms, user_agent=user_agent, proxy=proxy)
     app = extractor._app
@@ -496,11 +556,12 @@ def serve(
     server_thread.start()
     log.info("Listening on http://%s:%d", host, port)
     log.info(
-        "  timeout: %dms, auth: %s, proxy: %s, local files: %s",
+        "  timeout: %dms, auth: %s, proxy: %s, local files: %s, allowed CIDRs: %s",
         timeout_ms,
         "on" if api_key else "off",
         extractor.proxy_summary,
         "on" if allow_local_files else "off",
+        ", ".join(str(n) for n in networks) or "(public IPs only)",
     )
 
     shutting_down = False
@@ -533,7 +594,7 @@ def serve(
         try:
             # Single choke point: every request, regardless of endpoint,
             # passes through here and is subject to the URL policy.
-            access_error = _url_access_error(req.url, allow_local_files)
+            access_error = _url_access_error(req.url, allow_local_files, networks)
             if access_error:
                 url = _as_url(req.url)  # match the normalized form of success paths
                 if req.image:

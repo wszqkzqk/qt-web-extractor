@@ -19,6 +19,12 @@ TIMEOUT_MS=30000
 # behalf of clients. Off by default.
 #ALLOW_LOCAL_FILES=
 
+# Additional IP ranges the server may fetch from, comma-separated.
+# Private/reserved IPs (loopback, RFC1918, link-local incl. cloud
+# metadata, CGNAT) are blocked by default; "all" disables IP
+# restrictions entirely. Examples: 10.0.0.0/8, 100.64.0.0/10 (Tailscale)
+#ALLOW_CIDRS=
+
 # Standard outbound proxy environment variables.
 # Applies to both Chromium (Qt WebEngine) and HTTP fallback requests.
 # Only HTTP/HTTPS forward proxies are supported end-to-end.

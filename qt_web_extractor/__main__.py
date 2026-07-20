@@ -69,6 +69,7 @@ def _cmd_serve(args):
         api_key=args.api_key,
         proxy=args.proxy,
         allow_local_files=args.allow_local_files,
+        allow_cidrs=args.allow_cidr,
     )
 
 
@@ -127,6 +128,15 @@ def main():
         default=os.environ.get("ALLOW_LOCAL_FILES", "").lower() in ("1", "true", "yes"),
         help="Let the server access local files (file:// URLs and local "
         "paths). Off by default.",
+    )
+    p_serve.add_argument(
+        "--allow-cidr",
+        action="append",
+        metavar="CIDR",
+        default=[s for s in os.environ.get("ALLOW_CIDRS", "").split(",") if s.strip()],
+        help="Also allow fetching from IPs in this range (e.g. 10.0.0.0/8, "
+        "100.64.0.0/10), or 'all' to disable IP restrictions entirely. "
+        "Repeatable. Private/reserved IPs are blocked by default.",
     )
     p_serve.add_argument(
         "--proxy",

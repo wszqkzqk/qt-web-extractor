@@ -189,6 +189,10 @@ qt-web-extractor serve --api-key mysecretkey
 # let clients read server-local files (file:// URLs, local paths)
 qt-web-extractor serve --allow-local-files
 
+# allow fetching from private ranges (e.g. campus network, Tailscale);
+# private/reserved IPs are blocked by default
+qt-web-extractor serve --allow-cidr 10.0.0.0/8 --allow-cidr 100.64.0.0/10
+
 # override proxy for the service process
 qt-web-extractor serve --proxy http://127.0.0.1:7890
 ```
@@ -327,6 +331,7 @@ sudo systemctl enable --now qt-web-extractor
 | `USER_AGENT` | `""` | Custom User-Agent |
 | `API_KEY` | `""` | Bearer token auth (empty = no auth) |
 | `ALLOW_LOCAL_FILES` | `""` | Allow reading local files (`file://` URLs, local paths) for clients |
+| `ALLOW_CIDRS` | `""` | Comma-separated IP ranges allowed for fetching (private/reserved IPs are blocked by default; `all` disables) |
 | `HTTPS_PROXY` | unset | HTTPS outbound proxy |
 | `HTTP_PROXY` | unset | HTTP outbound proxy |
 | `ALL_PROXY` | unset | Fallback outbound proxy |
