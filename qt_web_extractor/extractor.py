@@ -25,6 +25,8 @@ import atexit
 import base64
 import html as html_lib
 import logging
+import mimetypes
+import pathlib
 import re
 import ssl
 import urllib.parse
@@ -52,17 +54,41 @@ os.environ.setdefault(
 
 log = logging.getLogger("qt-web-extractor")
 
-_IMAGE_URL_SUFFIXES = (
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".gif",
-    ".webp",
-    ".avif",
-    ".svg",
-    ".bmp",
-    ".ico",
-)
+# Authoritative extension→MIME map for the image formats we support.
+# The platform MIME database is unreliable for newer formats (.avif is
+# missing on stock macOS and on Python < 3.13), so only formats outside
+# this map fall back to mimetypes.
+_IMAGE_MIME_BY_SUFFIX = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".avif": "image/avif",
+    ".svg": "image/svg+xml",
+    ".bmp": "image/bmp",
+    ".ico": "image/x-icon",
+}
+
+_IMAGE_URL_SUFFIXES = tuple(_IMAGE_MIME_BY_SUFFIX)
+
+
+def _as_url(path_or_url: str) -> str:
+    """Return *path_or_url* as a URL; bare filesystem paths become file:// URLs.
+
+    Windows drive letters ("C:\\...") parse as one-letter schemes under
+    urlsplit; no real scheme is one letter, so a scheme of zero or one
+    characters means the input is a filesystem path (consistent with the
+    WHATWG URL Standard's Windows drive letter rule).
+    """
+    try:
+        scheme = urllib.parse.urlsplit(path_or_url).scheme
+    except ValueError:
+        scheme = ""
+    if len(scheme) <= 1:
+        return pathlib.Path(path_or_url).absolute().as_uri()
+    return path_or_url
+
 
 # Long-edge cap for rendered images (high-res tier of current vision models).
 _RENDER_MAX_EDGE = 2576
@@ -232,7 +258,7 @@ class _WebPage(QWebEnginePage):
     def start_loading(self, url: str):
         self._result.url = url
         self._timeout_timer.start()
-        self.load(QUrl(url))
+        self.load(QUrl(_as_url(url)))
 
     def _on_load_started(self):
         self._stability_timer.stop()
@@ -721,6 +747,7 @@ class QtWebExtractor:
 
     def extract_pdf(self, url_or_path: str) -> _ExtractionResult:
         """Extract text from a PDF file or URL using Qt PDF."""
+        url_or_path = _as_url(url_or_path)
         result = _ExtractionResult(url=url_or_path)
 
         # prevent GC while doc is in use
@@ -741,7 +768,11 @@ class QtWebExtractor:
                     _buffer.open(QIODevice.OpenModeFlag.ReadOnly)
                     doc.load(_buffer)
             else:
-                local_path = parsed.path if parsed.scheme == "file" else url_or_path
+                local_path = (
+                    urllib.request.url2pathname(parsed.path)
+                    if parsed.scheme == "file"
+                    else url_or_path
+                )
                 doc.load(local_path)
 
             if doc.status() != QPdfDocument.Status.Ready:
@@ -761,13 +792,33 @@ class QtWebExtractor:
         return result
 
     def fetch_image(self, url: str) -> _ImageResult:
-        """Load an image URL in the browser and return it rasterized as WebP.
+        """Load an image URL and return it as bytes.
+
+        Remote http(s) images are rendered in the browser and rasterized as
+        WebP; local files (file:// URLs and bare paths) are read directly.
 
         Must run on the Qt main thread.
         """
+        url = _as_url(url)
         result = _ImageResult(url=url)
-        if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
-            result.error = "Only absolute http(s) image URLs are supported"
+        scheme = urllib.parse.urlsplit(url).scheme.lower()
+        if scheme == "file":
+            path = urllib.request.url2pathname(urllib.parse.urlsplit(url).path)
+            ext = os.path.splitext(path)[1].lower()
+            mime = _IMAGE_MIME_BY_SUFFIX.get(ext) or mimetypes.guess_type(path)[0] or ""
+            if not mime.startswith("image/"):
+                result.error = "not an image file"
+                return result
+            try:
+                with open(path, "rb") as f:
+                    result.data = f.read()
+            except OSError as e:
+                result.error = str(e)
+                return result
+            result.mime_type = mime
+            return result
+        if scheme not in ("http", "https"):
+            result.error = "Only http(s) or local image URLs are supported"
             return result
 
         page = QWebEnginePage(self._render_profile)
