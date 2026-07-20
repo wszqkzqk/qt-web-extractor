@@ -24,6 +24,7 @@ import logging
 import queue
 import signal
 import threading
+import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 try:
@@ -34,11 +35,36 @@ except Exception:
 
 from PySide6.QtCore import QTimer
 
-from qt_web_extractor.extractor import QtWebExtractor, _ExtractionResult, _ImageResult
+from qt_web_extractor.extractor import QtWebExtractor, _ExtractionResult, _ImageResult, _as_url
 
 log = logging.getLogger("qt-web-extractor")
 
 _MCP_PROTOCOL_VERSION = "2024-11-05"
+
+# Schemes that fetch remote content; the tool's purpose, always allowed.
+_REMOTE_SCHEMES = frozenset({"http", "https", "ftp"})
+# Schemes that read server-local files; gated behind --allow-local-files.
+_LOCAL_SCHEMES = frozenset({"file"})
+# Any other scheme (data:, javascript:, chrome:, ...) is rejected outright.
+
+
+def _url_access_error(url: str, allow_local_files: bool) -> str | None:
+    """Error message if the server may not access *url*, else None.
+
+    Remote content (http/https/ftp) is always allowed; local files
+    (file://, bare paths, Windows drive paths) require local file access
+    to be enabled; any other scheme is rejected.
+    """
+    scheme = urllib.parse.urlsplit(_as_url(url)).scheme.lower()
+    if scheme in _REMOTE_SCHEMES:
+        return None
+    if scheme in _LOCAL_SCHEMES:
+        if allow_local_files:
+            return None
+        log.warning("Denied local file URL %s", url)
+        return "unsupported or invalid URL"
+    log.warning("Denied URL with unsupported scheme %r: %s", scheme, url)
+    return f"this server does not support the {scheme!r} URL scheme"
 
 
 class _ExtractRequest:
@@ -157,14 +183,15 @@ class _Handler(BaseHTTPRequestHandler):
                     "Resolve site-relative links against the page URL first: e.g. "
                     "after fetching https://xxx.yyy/foo/bar.html, view "
                     "![baz](/baz/img.png) by calling this tool with "
-                    "https://xxx.yyy/baz/img.png. Only absolute http(s) URLs."
+                    "https://xxx.yyy/baz/img.png. Absolute http(s) URLs, or "
+                    "file:// URLs if the server allows local files."
                 ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "url": {
                             "type": "string",
-                            "description": "The absolute http(s) URL of the image to fetch.",
+                            "description": "The URL of the image to fetch.",
                         }
                     },
                     "required": ["url"],
@@ -446,6 +473,7 @@ def serve(
     user_agent: str | None = None,
     api_key: str = "",
     proxy: str | None = None,
+    allow_local_files: bool = False,
 ):
     """Start the extraction server. Blocks forever (runs Qt event loop)."""
     logging.basicConfig(
@@ -468,10 +496,11 @@ def serve(
     server_thread.start()
     log.info("Listening on http://%s:%d", host, port)
     log.info(
-        "  timeout: %dms, auth: %s, proxy: %s",
+        "  timeout: %dms, auth: %s, proxy: %s, local files: %s",
         timeout_ms,
         "on" if api_key else "off",
         extractor.proxy_summary,
+        "on" if allow_local_files else "off",
     )
 
     shutting_down = False
@@ -502,7 +531,16 @@ def serve(
             app.quit()
             return
         try:
-            if req.image:
+            # Single choke point: every request, regardless of endpoint,
+            # passes through here and is subject to the URL policy.
+            access_error = _url_access_error(req.url, allow_local_files)
+            if access_error:
+                url = _as_url(req.url)  # match the normalized form of success paths
+                if req.image:
+                    result = _ImageResult(url=url, error=access_error)
+                else:
+                    result = _ExtractionResult(url=url, error=access_error)
+            elif req.image:
                 result = extractor.fetch_image(req.url)
             elif req.pdf:
                 result = extractor.extract_pdf(req.url)

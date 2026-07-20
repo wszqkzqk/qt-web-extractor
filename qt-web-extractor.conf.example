@@ -15,6 +15,10 @@ TIMEOUT_MS=30000
 # API key for Bearer token auth (empty = no auth)
 #API_KEY=
 
+# Allow the server to read local files (file:// URLs, local paths) on
+# behalf of clients. Off by default.
+#ALLOW_LOCAL_FILES=
+
 # Standard outbound proxy environment variables.
 # Applies to both Chromium (Qt WebEngine) and HTTP fallback requests.
 # Only HTTP/HTTPS forward proxies are supported end-to-end.
