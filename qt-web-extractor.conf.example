@@ -6,7 +6,8 @@
 HOST=127.0.0.1
 PORT=8766
 
-# Page load timeout in milliseconds
+# Page load timeout in milliseconds. For fetch_pdf image mode, this is the
+# operation-wide budget for loading the PDF and rendering all selected pages.
 TIMEOUT_MS=30000
 
 # Custom User-Agent (empty = default Chromium UA)
@@ -18,6 +19,15 @@ TIMEOUT_MS=30000
 # Allow the server to read local files (file:// URLs, local paths) on
 # behalf of clients. Off by default.
 #ALLOW_LOCAL_FILES=
+
+# Total memory budget in bytes for cached PDF downloads (default: 64 MiB)
+#PDF_CACHE_MAX_BYTES=67108864
+
+# Maximum PDF pages rendered per fetch_pdf image-mode call (default: 10)
+#PDF_MAX_RENDER_PAGES=10
+
+# Seconds a cached PDF download stays reusable (default: 600)
+#PDF_CACHE_TTL_S=600
 
 # Standard outbound proxy environment variables.
 # Applies to both Chromium (Qt WebEngine) and HTTP fallback requests.
