@@ -1,22 +1,44 @@
-name: Publish to AUR
+name: Check and publish to AUR
 
 on:
   push:
     branches: [main, master]
-    paths:
-      - 'aur/PKGBUILD'
-      - 'qt_web_extractor/**'
-      - 'pyproject.toml'
-      - 'qt-web-extractor.service'
-      - 'qt-web-extractor.conf.example'
-      - 'COPYING'
+  pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 env:
   AUR_PACKAGE: qt-web-extractor
 
 jobs:
+  arch-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    steps:
+      - name: Install dependencies
+        run: pacman -Syu --noconfirm git
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up build user
+        run: |
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+          chown -R builder:builder "${GITHUB_WORKSPACE}"
+
+      - name: Build, check, and package
+        run: |
+          su builder -c "cd '${GITHUB_WORKSPACE}' && makepkg --syncdeps --noconfirm --cleanbuild"
+
   aur-publish:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel
@@ -26,7 +48,9 @@ jobs:
           pacman -Syu --noconfirm git openssh
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Configure SSH for AUR
         run: |
