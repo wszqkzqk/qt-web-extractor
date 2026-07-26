@@ -237,11 +237,46 @@ API endpoints:
 PDF URLs (ending in `.pdf`) are auto-detected in both endpoints. For
 `POST /extract`, pass `"pdf": true` to force PDF mode.
 
-### MCP integration (Claude Code / OpenCode)
+### MCP integration
 
 The built-in MCP endpoint (`/mcp`) reuses the same running server process.
-No extra wrapper process is required.
-MCP uses the same Bearer authentication as `/extract`.
+No extra wrapper process is required. It speaks standard MCP over HTTP and
+uses the same Bearer authentication as `/extract`.
+
+Canonical configuration — works in most MCP clients:
+
+```json
+{
+  "mcpServers": {
+    "web-extractor": {
+      "url": "http://127.0.0.1:8766/mcp",
+      "headers": {
+        "Authorization": "Bearer mysecretkey"
+      }
+    }
+  }
+}
+```
+
+Omit `headers` when the server runs without `--api-key`. If you don't want
+to store the token in plain text, use your client's environment variable
+expansion if it has one. Clients differ only in where this JSON lives and
+in minor key naming — consult your client's own MCP documentation (see the
+[official client list](https://modelcontextprotocol.io/clients)).
+
+Claude Code, for example, takes a one-liner:
+
+```bash
+# no auth
+claude mcp add --transport http web-extractor http://127.0.0.1:8766/mcp
+
+# if server uses --api-key
+claude mcp add --transport http web-extractor http://127.0.0.1:8766/mcp \
+  --header "Authorization: Bearer mysecretkey"
+```
+
+To verify the setup, ask the agent to fetch a page, e.g. "use web-extractor
+to fetch https://example.com and summarize it".
 
 Available MCP tools:
 - `fetch_url` with input `{ "url": "https://..." }` — returns rendered
@@ -268,69 +303,6 @@ Available MCP tools:
   the page URL first: after fetching `https://xxx.yyy/foo/bar.html`, an
   image like `![baz](/baz/img.png)` is viewed by calling `fetch_image` with
   `https://xxx.yyy/baz/img.png`.
-
-Claude Code example:
-
-```bash
-# no auth
-claude mcp add --transport http web-extractor http://127.0.0.1:8766/mcp
-
-# if server uses --api-key
-claude mcp add --transport http web-extractor http://127.0.0.1:8766/mcp \
-  --header "Authorization: Bearer mysecretkey"
-```
-
-Optional Claude Code config:
-
-These files are user-managed and are not auto-created by package installation.
-
-- **Project-scoped**: create `.mcp.json` in your project root.
-- **User-scoped (global)**: configure `~/.claude.json` under `mcpServers`, or
-  run:
-  ```bash
-  claude mcp add --transport http --scope user web-extractor http://127.0.0.1:8766/mcp
-  ```
-
-Example `.mcp.json` (project-scoped):
-
-```json
-{
-  "mcpServers": {
-    "web-extractor": {
-      "type": "http",
-      "url": "${QT_WEB_EXTRACTOR_MCP_URL:-http://127.0.0.1:8766/mcp}",
-      "headers": {
-        "Authorization": "Bearer ${QT_WEB_EXTRACTOR_API_KEY:-}"
-      }
-    }
-  }
-}
-```
-
-OpenCode config (`opencode.json` in project root, or
-`~/.config/opencode/opencode.json` for global user config):
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "web_extractor": {
-      "type": "remote",
-      "url": "http://127.0.0.1:8766/mcp",
-      "enabled": true,
-      "oauth": false,
-      "headers": {
-        "Authorization": "Bearer {env:QT_WEB_EXTRACTOR_API_KEY}"
-      }
-    }
-  }
-}
-```
-
-Hardcoded values are also valid in both configs, for example:
-`"Authorization": "Bearer mysecretkey"`.
-
-When auth is disabled, the `Authorization` header can be omitted.
 
 ### systemd
 
