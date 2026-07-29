@@ -287,7 +287,7 @@ class _Handler(BaseHTTPRequestHandler):
             {
                 "name": "fetch_pdf",
                 "description": (
-                    "Fetches a PDF document. Default mode extracts its text. "
+                    "Fetches a PDF document and extracts its content. "
                     "Set mode to \"image\" to render pages as images you can "
                     "see — for figures, charts, scanned pages, or when "
                     "extracted text looks incomplete."
@@ -303,8 +303,9 @@ class _Handler(BaseHTTPRequestHandler):
                             "type": "string",
                             "enum": ["text", "image"],
                             "description": (
-                                "\"text\" (default): extract all text. "
-                                "\"image\": render pages as images."
+                                "\"text\": extract all text. "
+                                "\"image\": render pages as images you can "
+                                "see; recommended if you can view images."
                             ),
                         },
                         "pages": {
