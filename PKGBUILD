@@ -8,7 +8,7 @@ arch=('any')
 url='https://github.com/wszqkzqk/qt-web-extractor'
 license=('GPL-3.0-or-later')
 depends=('python' 'pyside6' 'qt6-webengine')
-makedepends=('python-build' 'python-installer' 'python-setuptools' 'python-wheel')
+makedepends=('git' 'python-build' 'python-installer' 'python-setuptools' 'python-wheel')
 backup=('etc/qt-web-extractor.conf')
 source=("${pkgname}::git+file://${startdir}")
 sha256sums=('SKIP')
@@ -24,6 +24,11 @@ pkgver() {
 build() {
     cd "${pkgname}"
     python -m build --wheel --no-isolation
+}
+
+check() {
+    cd "${pkgname}"
+    python -m unittest discover -s tests -v
 }
 
 package() {

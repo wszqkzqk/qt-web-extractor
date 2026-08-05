@@ -62,7 +62,6 @@ class Tools:
         Fetch and render a web page with full JavaScript support.
         Uses Qt WebEngine to load and render pages, handling JavaScript,
         cookies, and dynamic content that simple HTTP requests cannot process.
-        PDF URLs are detected and handled automatically.
 
         :param url: The URL of the web page to fetch and render.
         :return: The extracted plain text content of the rendered page.

@@ -26,6 +26,7 @@ import signal
 import threading
 import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from typing import cast
 
 try:
     from importlib.metadata import version
@@ -35,11 +36,23 @@ except Exception:
 
 from PySide6.QtCore import QTimer
 
-from qt_web_extractor.extractor import QtWebExtractor, _ExtractionResult, _ImageResult, _as_url
+from qt_web_extractor.extractor import (
+    QtWebExtractor,
+    _ExtractionResult,
+    _ImageResult,
+    _PdfRenderResult,
+    _as_url,
+)
 
 log = logging.getLogger("qt-web-extractor")
 
-_MCP_PROTOCOL_VERSION = "2024-11-05"
+_MCP_PROTOCOL_VERSION = "2025-06-18"
+
+_MCP_TOOL_ARGUMENTS = {
+    "fetch_url": frozenset({"url"}),
+    "fetch_image": frozenset({"url"}),
+    "fetch_pdf": frozenset({"url", "mode", "pages"}),
+}
 
 # Schemes that fetch remote content; the tool's purpose, always allowed.
 _REMOTE_SCHEMES = frozenset({"http", "https", "ftp"})
@@ -67,14 +80,48 @@ def _url_access_error(url: str, allow_local_files: bool) -> str | None:
     return f"this server does not support the {scheme!r} URL scheme"
 
 
-class _ExtractRequest:
-    __slots__ = ("url", "pdf", "image", "result", "done")
+def _validate_pages_arg(pages) -> tuple:
+    """Validate fetch_pdf's pages argument items: positive ints or "a-b"
+    range strings. Returns the items as a tuple."""
+    if not isinstance(pages, list):
+        raise ValueError("arguments.pages must be an array")
+    for item in pages:
+        if isinstance(item, bool):
+            ok = False
+        elif isinstance(item, int):
+            ok = item >= 1
+        elif isinstance(item, str):
+            parts = item.strip().split("-", 1)
+            ok = (
+                len(parts) == 2
+                and parts[0].isdigit()
+                and parts[1].isdigit()
+                and 1 <= int(parts[0]) <= int(parts[1])
+            )
+        else:
+            ok = False
+        if not ok:
+            raise ValueError(
+                'arguments.pages items must be positive integers or "a-b" ranges'
+            )
+    return tuple(pages)
 
-    def __init__(self, url: str, pdf: bool = False, image: bool = False):
+
+class _ExtractRequest:
+    __slots__ = ("url", "pdf", "image", "pdf_pages", "result", "done")
+
+    def __init__(
+        self,
+        url: str,
+        pdf: str = "",
+        image: bool = False,
+        pdf_pages: tuple | None = None,
+    ):
         self.url = url
-        self.pdf = pdf
+        self.pdf = pdf  # "", "text", or "image"
         self.image = image
-        self.result = None
+        self.pdf_pages = pdf_pages
+        self.result: _ExtractionResult | _ImageResult | _PdfRenderResult | None = None
         self.done = threading.Event()
 
 
@@ -84,8 +131,8 @@ class _Handler(BaseHTTPRequestHandler):
     api_key: str = ""
     extractor: QtWebExtractor
 
-    def log_message(self, fmt, *args):
-        log.info(fmt, *args)
+    def log_message(self, format, *args):
+        log.info(format, *args)
 
     def _check_auth(self) -> bool:
         if not self.api_key:
@@ -109,6 +156,19 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def _reject_mcp_origin(self) -> bool:
+        if self.headers.get("Origin") is None:
+            return False
+        self._send_json({"error": "Origin is not allowed for MCP requests"}, 403)
+        return True
+
+    def _reject_mcp_protocol_version(self, method: str = "") -> bool:
+        version = self.headers.get("MCP-Protocol-Version")
+        if method == "initialize" or version in (None, _MCP_PROTOCOL_VERSION):
+            return False
+        self._send_json({"error": "unsupported MCP protocol version"}, 400)
+        return True
+
     def _send_mcp_result(self, request_id, result):
         self._send_json({"jsonrpc": "2.0", "id": request_id, "result": result})
 
@@ -121,6 +181,18 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             self._send_json({"status": "ok"})
+            return
+        if self.path in ("/mcp", "/mcp/"):
+            if (
+                self._reject_mcp_origin()
+                or not self._check_auth()
+                or self._reject_mcp_protocol_version()
+            ):
+                return
+            self.send_response(405)
+            self.send_header("Allow", "POST")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
             return
         if not self._check_auth():
             return
@@ -141,22 +213,36 @@ class _Handler(BaseHTTPRequestHandler):
     def _is_pdf(url: str, extractor: QtWebExtractor) -> bool:
         return extractor.detect_pdf_url(url)
 
-    def _extract_one(self, url: str, pdf: bool = False) -> _ExtractionResult | None:
-        req = _ExtractRequest(url, pdf=pdf)
+    def _submit(
+        self, req: _ExtractRequest
+    ) -> _ExtractionResult | _ImageResult | _PdfRenderResult | None:
+        """Queue *req* for the Qt main thread and wait for its result;
+        the result type is determined by the request flags."""
         self.extract_queue.put(req)
         if not req.done.wait(timeout=self.timeout_s):
             return None
         return req.result
+
+    def _extract_one(self, url: str, pdf: str = "") -> _ExtractionResult | None:
+        return cast(
+            "_ExtractionResult | None", self._submit(_ExtractRequest(url, pdf=pdf))
+        )
 
     def _image_one(self, url: str) -> _ImageResult | None:
-        req = _ExtractRequest(url, image=True)
-        self.extract_queue.put(req)
-        if not req.done.wait(timeout=self.timeout_s):
-            return None
-        return req.result
+        return cast(
+            "_ImageResult | None", self._submit(_ExtractRequest(url, image=True))
+        )
 
-    @staticmethod
-    def _mcp_tools() -> list[dict]:
+    def _pdf_one(
+        self, url: str, mode: str = "text", pages: tuple | None = None
+    ) -> "_ExtractionResult | _PdfRenderResult | None":
+        return cast(
+            "_ExtractionResult | _PdfRenderResult | None",
+            self._submit(_ExtractRequest(url, pdf=mode, pdf_pages=pages)),
+        )
+
+    def _mcp_tools(self) -> list[dict]:
+        max_pages = self.extractor.pdf_max_render_pages
         return [
             {
                 "name": "fetch_url",
@@ -198,6 +284,51 @@ class _Handler(BaseHTTPRequestHandler):
                     "additionalProperties": False,
                 },
             },
+            {
+                "name": "fetch_pdf",
+                "description": (
+                    "Fetches a PDF document and extracts its content. "
+                    "Set mode to \"image\" to render pages as images you can "
+                    "see — for figures, charts, scanned pages, or when "
+                    "extracted text looks incomplete."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "The URL of the PDF document.",
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["text", "image"],
+                            "description": (
+                                "\"text\": extract all text. "
+                                "\"image\": render pages as images you can "
+                                "see; recommended if you can view images."
+                            ),
+                        },
+                        "pages": {
+                            "type": "array",
+                            "items": {
+                                "oneOf": [
+                                    {"type": "integer", "minimum": 1},
+                                    {"type": "string", "pattern": "^\\d+-\\d+$"},
+                                ]
+                            },
+                            "description": (
+                                "1-based pages to render in image mode: "
+                                "integers and/or \"a-b\" ranges "
+                                f"(up to {max_pages} per call). "
+                                "When omitted or empty, defaults to the first "
+                                f"{max_pages} pages."
+                            ),
+                        },
+                    },
+                    "required": ["url"],
+                    "additionalProperties": False,
+                },
+            },
         ]
 
     def _mcp_call_tool(self, params: dict) -> dict:
@@ -205,10 +336,22 @@ class _Handler(BaseHTTPRequestHandler):
         arguments = params.get("arguments", {})
         if not isinstance(arguments, dict):
             raise ValueError("arguments must be an object")
+        if not isinstance(name, str) or name not in _MCP_TOOL_ARGUMENTS:
+            raise ValueError("unknown tool name")
+        allowed_arguments = _MCP_TOOL_ARGUMENTS[name]
+        unknown_arguments = sorted(
+            repr(key) for key in arguments if key not in allowed_arguments
+        )
+        if unknown_arguments:
+            raise ValueError(
+                "unknown tool argument(s): " + ", ".join(unknown_arguments)
+            )
         if name == "fetch_url":
             return self._mcp_call_fetch_url(arguments)
         if name == "fetch_image":
             return self._mcp_call_fetch_image(arguments)
+        if name == "fetch_pdf":
+            return self._mcp_call_fetch_pdf(arguments)
         raise ValueError("unknown tool name")
 
     def _mcp_call_fetch_url(self, arguments: dict) -> dict:
@@ -227,8 +370,12 @@ class _Handler(BaseHTTPRequestHandler):
             # The URL actually points to an image; serve it as image content.
             return self._mcp_image_result(url)
 
-        result = self._extract_one(url, pdf=(kind == "pdf"))
+        result = self._extract_one(url, pdf="text" if kind == "pdf" else "")
+        return self._mcp_text_result(url, result)
 
+    @staticmethod
+    def _mcp_text_result(url: str, result: _ExtractionResult | None) -> dict:
+        """Shared Markdown envelope for fetch_url and fetch_pdf text mode."""
         if result is None:
             timeout_error = "extraction timed out"
             return {
@@ -277,6 +424,86 @@ class _Handler(BaseHTTPRequestHandler):
             raise ValueError("arguments.url is required")
 
         return self._mcp_image_result(url)
+
+    def _mcp_call_fetch_pdf(self, arguments: dict) -> dict:
+        url = arguments.get("url")
+        if not isinstance(url, str):
+            raise ValueError("arguments.url must be a string")
+
+        url = url.strip()
+        if not url:
+            raise ValueError("arguments.url is required")
+
+        mode = arguments.get("mode", "text")
+        if mode not in ("text", "image"):
+            raise ValueError('arguments.mode must be "text" or "image"')
+
+        pages = arguments.get("pages")
+        if mode == "text":
+            if pages is not None:
+                raise ValueError('arguments.pages only applies to "image" mode')
+            return self._mcp_pdf_text_result(url)
+
+        if pages is not None:
+            pages = _validate_pages_arg(pages)
+        return self._mcp_pdf_image_result(url, pages)
+
+    def _mcp_pdf_text_result(self, url: str) -> dict:
+        log.info("MCP fetch_pdf text: %s", url)
+        return self._mcp_text_result(
+            url, cast("_ExtractionResult | None", self._pdf_one(url, mode="text"))
+        )
+
+    def _mcp_pdf_image_result(self, url: str, pages: tuple | None) -> dict:
+        log.info("MCP fetch_pdf image: %s (pages=%s)", url, pages)
+        result = cast(
+            "_PdfRenderResult | None", self._pdf_one(url, mode="image", pages=pages)
+        )
+
+        if result is None:
+            timeout_error = "PDF render timed out"
+            return {
+                "content": [{"type": "text", "text": f"Error: {timeout_error}"}],
+                "structuredContent": _PdfRenderResult(url=url, error=timeout_error).to_dict(),
+                "isError": True,
+            }
+
+        info = result.to_dict()
+        if result.error or not result.pages:
+            error = result.error or "no pages rendered"
+            return {
+                "content": [{"type": "text", "text": f"Error: {error}"}],
+                "structuredContent": info,
+                "isError": True,
+            }
+
+        content: list[dict] = [
+            {
+                "type": "image",
+                "data": base64.b64encode(p.data).decode("ascii"),
+                "mimeType": p.mime_type,
+            }
+            for p in result.pages
+        ]
+
+        rendered = ", ".join(
+            f"{p.page} ({p.width}x{p.height})" for p in result.pages
+        )
+        summary = (
+            f"Rendered PDF page(s) {rendered} of {result.page_count} total "
+            f"({result.pages[0].mime_type})"
+        )
+        if result.truncated:
+            summary += "; truncated by the page-count or response-size limit"
+        if result.pages[-1].page < result.page_count:
+            summary += "; call fetch_pdf again with pages=[...] to view other pages"
+        content.append({"type": "text", "text": summary})
+
+        return {
+            "content": content,
+            "structuredContent": info,
+            "isError": False,
+        }
 
     def _mcp_image_result(self, url: str) -> dict:
         log.info("MCP fetch_image: %s", url)
@@ -348,16 +575,19 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_mcp_error(request_id if has_id else None, -32600, "Invalid Request")
             return
 
+        if self._reject_mcp_protocol_version(method):
+            return
+
         if not isinstance(params, dict):
             if has_id:
                 self._send_mcp_error(request_id, -32602, "Invalid params", {"reason": "params must be an object"})
             else:
-                self._send_empty()
+                self._send_empty(400)
             return
 
         # Ignore JSON-RPC notifications unless explicitly needed.
         if not has_id:
-            self._send_empty()
+            self._send_empty(202)
             return
 
         if method == "initialize":
@@ -398,11 +628,13 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_mcp_error(request_id, -32601, "Method not found")
 
     def do_POST(self):
-        if not self._check_auth():
+        if self.path in ("/mcp", "/mcp/"):
+            if self._reject_mcp_origin() or not self._check_auth():
+                return
+            self._handle_mcp()
             return
 
-        if self.path in ("/mcp", "/mcp/"):
-            self._handle_mcp()
+        if not self._check_auth():
             return
 
         body = self._read_json_body()
@@ -422,7 +654,7 @@ class _Handler(BaseHTTPRequestHandler):
                 url = url.strip()
                 if not url:
                     continue
-                pdf = self._is_pdf(url, self.extractor)
+                pdf = "text" if self._is_pdf(url, self.extractor) else ""
                 log.info("  -> %s (pdf=%s)", url, pdf)
                 result = self._extract_one(url, pdf=pdf)
                 if result is None:
@@ -452,6 +684,7 @@ class _Handler(BaseHTTPRequestHandler):
             pdf = body.get("pdf", None)
             if pdf is None:
                 pdf = self._is_pdf(url, self.extractor)
+            pdf = "text" if pdf else ""
 
             log.info("Extract request: %s (pdf=%s)", url, pdf)
             result = self._extract_one(url, pdf=pdf)
@@ -474,6 +707,9 @@ def serve(
     api_key: str = "",
     proxy: str | None = None,
     allow_local_files: bool = False,
+    pdf_cache_max_bytes: int = 64 * 1024 * 1024,
+    pdf_max_render_pages: int = 10,
+    pdf_cache_ttl_s: int = 600,
 ):
     """Start the extraction server. Blocks forever (runs Qt event loop)."""
     logging.basicConfig(
@@ -481,7 +717,14 @@ def serve(
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
 
-    extractor = QtWebExtractor(timeout_ms=timeout_ms, user_agent=user_agent, proxy=proxy)
+    extractor = QtWebExtractor(
+        timeout_ms=timeout_ms,
+        user_agent=user_agent,
+        proxy=proxy,
+        pdf_cache_max_bytes=pdf_cache_max_bytes,
+        pdf_max_render_pages=pdf_max_render_pages,
+        pdf_cache_ttl_s=pdf_cache_ttl_s,
+    )
     app = extractor._app
 
     extract_queue: queue.Queue[_ExtractRequest | None] = queue.Queue()
@@ -538,10 +781,17 @@ def serve(
                 url = _as_url(req.url)  # match the normalized form of success paths
                 if req.image:
                     result = _ImageResult(url=url, error=access_error)
+                elif req.pdf == "image":
+                    result = _PdfRenderResult(url=url, error=access_error)
                 else:
                     result = _ExtractionResult(url=url, error=access_error)
             elif req.image:
                 result = extractor.fetch_image(req.url)
+            elif req.pdf == "image":
+                result = extractor.render_pdf_pages(
+                    req.url,
+                    list(req.pdf_pages) if req.pdf_pages is not None else None,
+                )
             elif req.pdf:
                 result = extractor.extract_pdf(req.url)
             else:
@@ -550,6 +800,8 @@ def serve(
             log.exception("Extraction failed for %s", req.url)
             if req.image:
                 result = _ImageResult(url=req.url, error=str(e))
+            elif req.pdf == "image":
+                result = _PdfRenderResult(url=req.url, error=str(e))
             else:
                 result = _ExtractionResult(url=req.url, error=str(e))
         req.result = result

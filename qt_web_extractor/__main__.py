@@ -69,6 +69,9 @@ def _cmd_serve(args):
         api_key=args.api_key,
         proxy=args.proxy,
         allow_local_files=args.allow_local_files,
+        pdf_cache_max_bytes=args.pdf_cache_max_bytes,
+        pdf_max_render_pages=args.pdf_max_render_pages,
+        pdf_cache_ttl_s=args.pdf_cache_ttl_s,
     )
 
 
@@ -127,6 +130,26 @@ def main():
         default=os.environ.get("ALLOW_LOCAL_FILES", "").lower() in ("1", "true", "yes"),
         help="Let the server access local files (file:// URLs and local "
         "paths). Off by default.",
+    )
+    p_serve.add_argument(
+        "--pdf-cache-max-bytes",
+        type=int,
+        default=int(os.environ.get("PDF_CACHE_MAX_BYTES", str(64 * 1024 * 1024))),
+        help="Total memory budget in bytes for cached PDF downloads "
+        "(default: 64 MiB).",
+    )
+    p_serve.add_argument(
+        "--pdf-max-render-pages",
+        type=int,
+        default=int(os.environ.get("PDF_MAX_RENDER_PAGES", "10")),
+        help="Maximum PDF pages rendered per fetch_pdf image-mode call "
+        "(default: 10).",
+    )
+    p_serve.add_argument(
+        "--pdf-cache-ttl-s",
+        type=int,
+        default=int(os.environ.get("PDF_CACHE_TTL_S", "600")),
+        help="Seconds a cached PDF download stays reusable (default: 600).",
     )
     p_serve.add_argument(
         "--proxy",
