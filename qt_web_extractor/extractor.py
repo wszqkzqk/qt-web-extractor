@@ -210,6 +210,91 @@ window.__att();
 """
 
 
+# Serialize the Composed Tree (Shadow DOM + Slots) to HTML. Module-level so
+# tests can run it directly.
+_SERIALIZE_DOM_JS = r"""
+(function() {
+    const VOID = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
+    const SKIP = new Set(['script','style','noscript','template','meta','link','base','title']);
+
+    function escapeHTML(str) {
+        return (str || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    function abs(u) {
+        try { return new URL(u, document.baseURI).href; } catch (e) { return u; }
+    }
+
+    function walk(node) {
+        if (node.nodeType === Node.TEXT_NODE) return escapeHTML(node.nodeValue);
+        if (node.nodeType !== Node.ELEMENT_NODE) return '';
+
+        let t = node.tagName.toLowerCase();
+        if (SKIP.has(t)) return '';
+
+        // Inline SVG: keep only its semantic text, not the geometry.
+        if (t === 'svg') {
+            const bits = [];
+            const al = node.getAttribute('aria-label');
+            if (al) bits.push(al.trim());
+            for (let e of node.querySelectorAll('title,desc,text')) {
+                const s = e.textContent.replace(/\s+/g, ' ').trim();
+                if (s) bits.push(s);
+            }
+            return escapeHTML(bits.join(' ').slice(0, 200));
+        }
+
+        if (t === 'slot') return [...node.assignedNodes({flatten:true})].map(walk).join('');
+
+        // Map web component tags (containing '-') to <div> for QTextDocument compatibility
+        let outTag = t.includes('-') ? 'div' : t;
+        let h = '<' + outTag;
+
+        let hasSrc = false;
+        for (let a of node.attributes) {
+            if (t === 'img') {
+                const v = a.value.trim();
+                // Drop empty or data: placeholder src; backfilled below.
+                if (a.name === 'src') {
+                    if (v && v.slice(0, 5).toLowerCase() !== 'data:') {
+                        hasSrc = true;
+                        h += ' src="' + escapeHTML(abs(v)) + '"';
+                    }
+                    continue;
+                }
+                // Scrub data: payloads, but only in data-* attributes
+                // (alt/title text may legitimately start with "data:").
+                if (a.name.startsWith('data-') && v.slice(0, 5).toLowerCase() === 'data:') continue;
+            }
+            h += ' ' + a.name + '="' + escapeHTML(a.value) + '"';
+        }
+
+        // Lazy loaders keep the real URL in data-src (serialized copy only).
+        // A src-less <img> is kept as-is: Qt renders it as an ![alt]() marker.
+        if (t === 'img' && !hasSrc) {
+            const ds = (node.getAttribute('data-src') || '').trim();
+            if (ds && ds.slice(0, 5).toLowerCase() !== 'data:') {
+                h += ' src="' + escapeHTML(abs(ds)) + '"';
+            }
+        }
+
+        if (VOID.has(outTag)) {
+            h += '>';
+        } else {
+            h += '>' + [...(node.shadowRoot || node).childNodes].map(walk).join('') + '</' + outTag + '>';
+        }
+        return h;
+    }
+    return walk(document.documentElement);
+})();
+"""
+
+
 @dataclass(frozen=True)
 class _ProxyConfig:
     proxies: dict[str, str]
@@ -387,46 +472,7 @@ class _WebPage(QWebEnginePage):
             self._result.error = "Page load reported failure (content may be incomplete)"
 
         # Inject JS to serialize the Composed Tree (Shadow DOM + Slots) safely and efficiently
-        js = """(function() {
-            const VOID = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
-            const SKIP = new Set(['script','style','svg','noscript','template','meta','link','base','title']);
-            
-            function escapeHTML(str) {
-                return (str || '')
-                    .replace(/&/g, '&amp;')
-                    .replace(/</g, '&lt;')
-                    .replace(/>/g, '&gt;')
-                    .replace(/"/g, '&quot;')
-                    .replace(/'/g, '&#039;');
-            }
-
-            function walk(node) {
-                if (node.nodeType === Node.TEXT_NODE) return escapeHTML(node.nodeValue);
-                if (node.nodeType !== Node.ELEMENT_NODE) return '';
-                
-                let t = node.tagName.toLowerCase();
-                if (SKIP.has(t)) return '';
-                
-                if (t === 'slot') return [...node.assignedNodes({flatten:true})].map(walk).join('');
-                
-                // Map web component tags (containing '-') to <div> for QTextDocument compatibility
-                let outTag = t.includes('-') ? 'div' : t;
-                let h = '<' + outTag;
-                
-                for (let a of node.attributes) {
-                    h += ' ' + a.name + '="' + escapeHTML(a.value) + '"';
-                }
-                
-                if (VOID.has(outTag)) {
-                    h += '>';
-                } else {
-                    h += '>' + [...(node.shadowRoot || node).childNodes].map(walk).join('') + '</' + outTag + '>';
-                }
-                return h;
-            }
-            return walk(document.documentElement);
-        })();"""
-        self.runJavaScript(js, 0, self._on_flattened_html_ready)
+        self.runJavaScript(_SERIALIZE_DOM_JS, 0, self._on_flattened_html_ready)
 
     def _on_flattened_html_ready(self, shadow_html: str):
         if self._settled:
@@ -453,9 +499,10 @@ class _WebPage(QWebEnginePage):
     _RE_STYLE = re.compile(r"<style[\s>].*?</style>", re.DOTALL | re.IGNORECASE)
     _RE_BODY = re.compile(r"<body[^>]*>(.*?)</body>", re.DOTALL | re.IGNORECASE)
     _RE_CONTENT_START = re.compile(r"<(main|article|h1|h2|section|p)\b", re.IGNORECASE)
-    # Replace <img> tags with data URI src by their alt text (or nothing).
+    # Replace data-URI-src <img> with a src-less <img> (Markdown: ![alt]() marker).
+    # (?<=\s) requires a real attribute boundary: not data-src / data_src / lazy:src.
     _RE_DATA_URI_IMG = re.compile(
-        r'<img\b[^>]*\bsrc=["\']data:[^"\']*["\'][^>]*>',
+        r"""<img\b(?:[^>'"]|"[^"]*"|'[^']*')*(?<=\s)src=["']data:[^"']*["'](?:[^>'"]|"[^"]*"|'[^']*')*>""",
         re.IGNORECASE | re.DOTALL,
     )
     # Strip data URI attributes from other tags (source srcset, video poster, etc.).
@@ -471,7 +518,10 @@ class _WebPage(QWebEnginePage):
     @staticmethod
     def _replace_data_img(match: re.Match) -> str:
         m = re.search(r'(?:^|\s)alt="([^"]*)"|(?:^|\s)alt=\'([^\']*)\'', match.group(0), re.IGNORECASE)
-        return (m.group(1) or m.group(2)) if m else ""
+        alt = ((m.group(1) or m.group(2) or "") if m else "").strip()
+        if not alt:
+            return "<img>"
+        return f'<img alt="{html_lib.escape(alt, quote=True)}">'
 
     @staticmethod
     def _qt_html_to_markdown(raw: str) -> str:
