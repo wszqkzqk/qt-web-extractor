@@ -1,5 +1,9 @@
 # Qt Web Extractor
 
+<p align="center">
+  <img src="logo.svg" alt="Qt Web Extractor logo" width="128" height="128">
+</p>
+
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/wszqkzqk/qt-web-extractor)
 
 A general-purpose **multimodal** web content extraction engine powered by Qt
