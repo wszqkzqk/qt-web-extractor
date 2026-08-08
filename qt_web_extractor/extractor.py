@@ -257,22 +257,30 @@ _SERIALIZE_DOM_JS = r"""
 
         let hasSrc = false;
         for (let a of node.attributes) {
-            if (t === 'img' && a.name === 'src') {
+            if (t === 'img') {
                 const v = a.value.trim();
                 // Drop empty or data: placeholder src; backfilled below.
-                if (v && v.slice(0, 5).toLowerCase() !== 'data:') {
-                    hasSrc = true;
-                    h += ' src="' + escapeHTML(abs(v)) + '"';
+                if (a.name === 'src') {
+                    if (v && v.slice(0, 5).toLowerCase() !== 'data:') {
+                        hasSrc = true;
+                        h += ' src="' + escapeHTML(abs(v)) + '"';
+                    }
+                    continue;
                 }
-                continue;
+                // Scrub data: payloads, but only in data-* attributes
+                // (alt/title text may legitimately start with "data:").
+                if (a.name.startsWith('data-') && v.slice(0, 5).toLowerCase() === 'data:') continue;
             }
             h += ' ' + a.name + '="' + escapeHTML(a.value) + '"';
         }
 
         // Lazy loaders keep the real URL in data-src (serialized copy only).
+        // A src-less <img> is kept as-is: Qt renders it as an ![alt]() marker.
         if (t === 'img' && !hasSrc) {
-            const ds = node.getAttribute('data-src');
-            if (ds) h += ' src="' + escapeHTML(abs(ds)) + '"';
+            const ds = (node.getAttribute('data-src') || '').trim();
+            if (ds && ds.slice(0, 5).toLowerCase() !== 'data:') {
+                h += ' src="' + escapeHTML(abs(ds)) + '"';
+            }
         }
 
         if (VOID.has(outTag)) {
@@ -491,9 +499,10 @@ class _WebPage(QWebEnginePage):
     _RE_STYLE = re.compile(r"<style[\s>].*?</style>", re.DOTALL | re.IGNORECASE)
     _RE_BODY = re.compile(r"<body[^>]*>(.*?)</body>", re.DOTALL | re.IGNORECASE)
     _RE_CONTENT_START = re.compile(r"<(main|article|h1|h2|section|p)\b", re.IGNORECASE)
-    # Replace <img> tags with data URI src by their alt text (or nothing).
+    # Replace data-URI-src <img> with a src-less <img> (Markdown: ![alt]() marker).
+    # (?<=\s) requires a real attribute boundary: not data-src / data_src / lazy:src.
     _RE_DATA_URI_IMG = re.compile(
-        r'<img\b[^>]*\bsrc=["\']data:[^"\']*["\'][^>]*>',
+        r"""<img\b(?:[^>'"]|"[^"]*"|'[^']*')*(?<=\s)src=["']data:[^"']*["'](?:[^>'"]|"[^"]*"|'[^']*')*>""",
         re.IGNORECASE | re.DOTALL,
     )
     # Strip data URI attributes from other tags (source srcset, video poster, etc.).
@@ -509,7 +518,10 @@ class _WebPage(QWebEnginePage):
     @staticmethod
     def _replace_data_img(match: re.Match) -> str:
         m = re.search(r'(?:^|\s)alt="([^"]*)"|(?:^|\s)alt=\'([^\']*)\'', match.group(0), re.IGNORECASE)
-        return (m.group(1) or m.group(2)) if m else ""
+        alt = ((m.group(1) or m.group(2) or "") if m else "").strip()
+        if not alt:
+            return "<img>"
+        return f'<img alt="{html_lib.escape(alt, quote=True)}">'
 
     @staticmethod
     def _qt_html_to_markdown(raw: str) -> str:

@@ -2,7 +2,7 @@ import os
 import unittest
 
 import shiboken6
-from PySide6.QtCore import QEventLoop, QUrl
+from PySide6.QtCore import QEventLoop, QTimer, QUrl
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
 from PySide6.QtWidgets import QApplication
 
@@ -37,8 +37,14 @@ def serialize_dom(body_html: str) -> str:
         )
 
     page.loadFinished.connect(on_load)
+    watchdog = QTimer()
+    watchdog.setSingleShot(True)
+    watchdog.setInterval(10_000)
+    watchdog.timeout.connect(loop.quit)
+    watchdog.start()
     page.setHtml(f"<html><body>{body_html}</body></html>", QUrl(_BASE_URL))
     loop.exec()
+    watchdog.stop()
     page.loadFinished.disconnect(on_load)
     shiboken6.delete(page)
     shiboken6.delete(profile)
@@ -90,6 +96,29 @@ class DomSerializationTests(unittest.TestCase):
         )
         self.assertNotIn("LEAKED_DATA_TOKEN", md)
         self.assertNotIn("data:", md)
+
+    def test_placeholder_img_without_usable_url_keeps_image_marker(self):
+        md = serialize_markdown(
+            '<img src="data:image/png;base64,XX" alt="chart alt">'
+        )
+        self.assertIn("![chart alt]()", md)
+        self.assertNotIn("data:", md)
+
+    def test_data_uri_data_src_not_backfilled(self):
+        html = serialize_dom(
+            '<img src="data:image/svg+xml,%3Csvg%3E%3C/svg%3E"'
+            ' data-src="data:image/png;base64,LEAKED_DATA_TOKEN" alt="w">'
+        )
+        self.assertNotIn("LEAKED_DATA_TOKEN", html)
+        self.assertNotIn("data:", html)
+        self.assertIn('<img alt="w">', html)
+
+    def test_text_attr_starting_with_data_prefix_survives(self):
+        # alt text starting with "data:" is not a payload; keep it.
+        md = serialize_markdown(
+            '<img src="https://cdn.example/real.png" alt="data: quarterly results">'
+        )
+        self.assertIn("![data: quarterly results](https://cdn.example/real.png)", md)
 
     def test_svg_semantic_text_kept_geometry_dropped(self):
         md = serialize_markdown(
