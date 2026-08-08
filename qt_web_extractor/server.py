@@ -54,6 +54,13 @@ _MCP_TOOL_ARGUMENTS = {
     "fetch_pdf": frozenset({"url", "mode", "pages"}),
 }
 
+# All tools are side-effect-free reads of external (open-world) content.
+_MCP_TOOL_ANNOTATIONS = {
+    "readOnlyHint": True,
+    "idempotentHint": True,
+    "openWorldHint": True,
+}
+
 # Schemes that fetch remote content; the tool's purpose, always allowed.
 _REMOTE_SCHEMES = frozenset({"http", "https", "ftp"})
 # Schemes that read server-local files; gated behind --allow-local-files.
@@ -249,6 +256,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "description": (
                     "Extracts content from websites, including dynamic pages, to clean Markdown."
                 ),
+                "annotations": _MCP_TOOL_ANNOTATIONS,
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -272,6 +280,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "https://xxx.yyy/baz/img.png. Absolute http(s) URLs, or "
                     "file:// URLs if the server allows local files."
                 ),
+                "annotations": _MCP_TOOL_ANNOTATIONS,
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -292,6 +301,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "see — for figures, charts, scanned pages, or when "
                     "extracted text looks incomplete."
                 ),
+                "annotations": _MCP_TOOL_ANNOTATIONS,
                 "inputSchema": {
                     "type": "object",
                     "properties": {

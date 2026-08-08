@@ -74,6 +74,17 @@ class PageArgumentTests(unittest.TestCase):
         description = fetch_pdf["inputSchema"]["properties"]["pages"]["description"]
         self.assertIn("omitted or empty", description)
 
+    def test_all_tools_advertise_read_only_annotations(self):
+        handler = _handler()
+        tools = handler._mcp_tools()
+        self.assertEqual({tool["name"] for tool in tools}, {"fetch_url", "fetch_image", "fetch_pdf"})
+        for tool in tools:
+            with self.subTest(tool=tool["name"]):
+                annotations = tool["annotations"]
+                self.assertTrue(annotations["readOnlyHint"])
+                self.assertTrue(annotations["idempotentHint"])
+                self.assertTrue(annotations["openWorldHint"])
+
 
 class McpContractTests(unittest.TestCase):
     @staticmethod
