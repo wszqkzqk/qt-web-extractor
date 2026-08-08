@@ -210,6 +210,83 @@ window.__att();
 """
 
 
+# Serialize the Composed Tree (Shadow DOM + Slots) to HTML. Module-level so
+# tests can run it directly.
+_SERIALIZE_DOM_JS = r"""
+(function() {
+    const VOID = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
+    const SKIP = new Set(['script','style','noscript','template','meta','link','base','title']);
+
+    function escapeHTML(str) {
+        return (str || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    function abs(u) {
+        try { return new URL(u, document.baseURI).href; } catch (e) { return u; }
+    }
+
+    function walk(node) {
+        if (node.nodeType === Node.TEXT_NODE) return escapeHTML(node.nodeValue);
+        if (node.nodeType !== Node.ELEMENT_NODE) return '';
+
+        let t = node.tagName.toLowerCase();
+        if (SKIP.has(t)) return '';
+
+        // Inline SVG: keep only its semantic text, not the geometry.
+        if (t === 'svg') {
+            const bits = [];
+            const al = node.getAttribute('aria-label');
+            if (al) bits.push(al.trim());
+            for (let e of node.querySelectorAll('title,desc,text')) {
+                const s = e.textContent.replace(/\s+/g, ' ').trim();
+                if (s) bits.push(s);
+            }
+            return escapeHTML(bits.join(' ').slice(0, 200));
+        }
+
+        if (t === 'slot') return [...node.assignedNodes({flatten:true})].map(walk).join('');
+
+        // Map web component tags (containing '-') to <div> for QTextDocument compatibility
+        let outTag = t.includes('-') ? 'div' : t;
+        let h = '<' + outTag;
+
+        let hasSrc = false;
+        for (let a of node.attributes) {
+            if (t === 'img' && a.name === 'src') {
+                const v = a.value.trim();
+                // Drop empty or data: placeholder src; backfilled below.
+                if (v && v.slice(0, 5).toLowerCase() !== 'data:') {
+                    hasSrc = true;
+                    h += ' src="' + escapeHTML(abs(v)) + '"';
+                }
+                continue;
+            }
+            h += ' ' + a.name + '="' + escapeHTML(a.value) + '"';
+        }
+
+        // Lazy loaders keep the real URL in data-src (serialized copy only).
+        if (t === 'img' && !hasSrc) {
+            const ds = node.getAttribute('data-src');
+            if (ds) h += ' src="' + escapeHTML(abs(ds)) + '"';
+        }
+
+        if (VOID.has(outTag)) {
+            h += '>';
+        } else {
+            h += '>' + [...(node.shadowRoot || node).childNodes].map(walk).join('') + '</' + outTag + '>';
+        }
+        return h;
+    }
+    return walk(document.documentElement);
+})();
+"""
+
+
 @dataclass(frozen=True)
 class _ProxyConfig:
     proxies: dict[str, str]
@@ -387,46 +464,7 @@ class _WebPage(QWebEnginePage):
             self._result.error = "Page load reported failure (content may be incomplete)"
 
         # Inject JS to serialize the Composed Tree (Shadow DOM + Slots) safely and efficiently
-        js = """(function() {
-            const VOID = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
-            const SKIP = new Set(['script','style','svg','noscript','template','meta','link','base','title']);
-            
-            function escapeHTML(str) {
-                return (str || '')
-                    .replace(/&/g, '&amp;')
-                    .replace(/</g, '&lt;')
-                    .replace(/>/g, '&gt;')
-                    .replace(/"/g, '&quot;')
-                    .replace(/'/g, '&#039;');
-            }
-
-            function walk(node) {
-                if (node.nodeType === Node.TEXT_NODE) return escapeHTML(node.nodeValue);
-                if (node.nodeType !== Node.ELEMENT_NODE) return '';
-                
-                let t = node.tagName.toLowerCase();
-                if (SKIP.has(t)) return '';
-                
-                if (t === 'slot') return [...node.assignedNodes({flatten:true})].map(walk).join('');
-                
-                // Map web component tags (containing '-') to <div> for QTextDocument compatibility
-                let outTag = t.includes('-') ? 'div' : t;
-                let h = '<' + outTag;
-                
-                for (let a of node.attributes) {
-                    h += ' ' + a.name + '="' + escapeHTML(a.value) + '"';
-                }
-                
-                if (VOID.has(outTag)) {
-                    h += '>';
-                } else {
-                    h += '>' + [...(node.shadowRoot || node).childNodes].map(walk).join('') + '</' + outTag + '>';
-                }
-                return h;
-            }
-            return walk(document.documentElement);
-        })();"""
-        self.runJavaScript(js, 0, self._on_flattened_html_ready)
+        self.runJavaScript(_SERIALIZE_DOM_JS, 0, self._on_flattened_html_ready)
 
     def _on_flattened_html_ready(self, shadow_html: str):
         if self._settled:
